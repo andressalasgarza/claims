@@ -53,6 +53,11 @@ FOR AGENTS
   under --format ai, errors emit a single-line json envelope on stderr:
     {"error":"...","kind":"clap|runtime","code":1|2,...}
   exit 2 = bad args (clap), exit 1 = runtime (validation, drift, not found).
+
+  archaeology backfill (git + mb → shadow ledger, capped at documented):
+    clms archaeology --dry-run            # preview
+    clms archaeology                      # execute
+    clms context --exclude-agent archaeology  # hide backfill from live ctx
 "#;
 
 #[derive(Parser)]
@@ -488,7 +493,19 @@ fn run(cli: Cli) -> Result<()> {
 
 fn schema_value() -> serde_json::Value {
     serde_json::json!({
-        "version": "1.0",
+        "version": "1.1",
+        "archaeology": {
+            "agent_stamp": "archaeology",
+            "session_stamp_format": "backfill-<rfc3339-ts>",
+            "confidence_cap": "documented",
+            "sources": {
+                "git": "always on; one claim per commit, evidence quotes commit subject",
+                "mb":  "optional; auto-detected via .marbles/marbles.csv; --no-mb to skip"
+            },
+            "refute_detection": "explicit `Revert \"...\"` commits only (no semantic refutes)",
+            "dedup_rule": "git <-> mb merge requires explicit m-XXXX reference in commit msg",
+            "filter_live_context": "--exclude-agent archaeology on context/timeline/suspect"
+        },
         "states": ["pending", "verified", "refuted", "unverifiable", "suspect"],
         "confidence_tiers": [
             {"name": "derived",    "rank": 1},
