@@ -43,8 +43,15 @@ FOR AGENTS
   always run with --format ai for json output. set CLAIMS_AGENT and
   CLAIMS_SESSION env vars so every write is auto-stamped. before adding a
   claim, run `clms context --format ai` to load known truth, then list
-  every existing claim that must hold for yours via --depends-on. for full
-  command reference in one shot: `clms help-all`.
+  every existing claim that must hold for yours via --depends-on.
+
+  agent self-discovery (run once, cache the result):
+    clms --format ai schema     # full requirement matrix + enums + envelopes
+    clms help-all               # every subcommand's long help in one shot
+
+  under --format ai, errors emit a single-line json envelope on stderr:
+    {"error":"...","kind":"clap|runtime","code":1|2,...}
+  exit 2 = bad args (clap), exit 1 = runtime (validation, drift, not found).
 "#;
 
 #[derive(Parser)]
@@ -188,7 +195,22 @@ enum Cmd {
     DiffEvidence { id: String },
     /// dump top-level help + every subcommand's help in a single output. for agent context-stuffing.
     HelpAll,
+    /// dump machine-readable schema (commands, evidence-method requirements, enums). for agent self-discovery.
+    #[command(after_help = SCHEMA_HELP)]
+    Schema,
 }
+
+const SCHEMA_HELP: &str = r#"
+EXAMPLES
+  clms schema                          # human-readable schema overview
+  clms --format ai schema              # full json schema for agent self-discovery
+
+NOTES
+  emits the requirement matrix per evidence method (mirrors what `verify`
+  enforces at runtime), plus enum values for states, confidence tiers, edge
+  types, and output formats. cache it once per agent session and you can
+  build valid `verify` invocations without trial-and-error.
+"#;
 
 #[derive(Args)]
 struct AddArgs {
@@ -260,8 +282,106 @@ struct RefuteArgs {
     cascade: bool,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn detect_early_format() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--format" {
+            if let Some(next) = args.get(i + 1) {
+                return Some(next.clone());
+            }
+        }
+        if let Some(rest) = a.strip_prefix("--format=") {
+            return Some(rest.to_string());
+        }
+        i += 1;
+    }
+    std::env::var("CLAIMS_FORMAT").ok().filter(|s| !s.is_empty())
+}
+
+fn is_ai_format(s: &Option<String>) -> bool {
+    s.as_deref()
+        .map(|x| x.eq_ignore_ascii_case("ai"))
+        .unwrap_or(false)
+}
+
+fn emit_json_error(err: &str, kind: &str, code: i32, extras: serde_json::Value) {
+    let mut env = serde_json::json!({
+        "error": err,
+        "kind": kind,
+        "code": code,
+    });
+    if let serde_json::Value::Object(map) = extras {
+        if let serde_json::Value::Object(out) = &mut env {
+            for (k, v) in map {
+                out.insert(k, v);
+            }
+        }
+    }
+    eprintln!("{}", env);
+}
+
+fn clap_err_extras(e: &clap::Error) -> (String, serde_json::Value) {
+    use clap::error::ContextKind;
+    let mut field: Option<String> = None;
+    for (ck, cv) in e.context() {
+        if matches!(ck, ContextKind::InvalidArg) {
+            field = Some(cv.to_string());
+            break;
+        }
+    }
+    let kind_dbg = format!("{:?}", e.kind());
+    let msg = e
+        .to_string()
+        .lines()
+        .next()
+        .unwrap_or("clap parse error")
+        .trim_start_matches("error: ")
+        .to_string();
+    let mut extras = serde_json::Map::new();
+    extras.insert("clap_kind".into(), serde_json::Value::String(kind_dbg));
+    if let Some(f) = field {
+        extras.insert("field".into(), serde_json::Value::String(f));
+    }
+    (msg, serde_json::Value::Object(extras))
+}
+
+fn main() {
+    let early_fmt = detect_early_format();
+    let ai = is_ai_format(&early_fmt);
+
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            use clap::error::ErrorKind;
+            match e.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => e.exit(),
+                _ => {
+                    if ai {
+                        let (msg, extras) = clap_err_extras(&e);
+                        emit_json_error(&msg, "clap", 2, extras);
+                        std::process::exit(2);
+                    } else {
+                        e.exit();
+                    }
+                }
+            }
+        }
+    };
+
+    if let Err(e) = run(cli) {
+        let msg = format!("{:#}", e);
+        if ai {
+            emit_json_error(&msg, "runtime", 1, serde_json::json!({}));
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        std::process::exit(1);
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
     let fmt = OutputFormat::parse(&cli.format)?;
     let cwd = cli.dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap());
     let mut store = Store::open_or_init(&cwd)?;
@@ -288,7 +408,103 @@ fn main() -> Result<()> {
         Cmd::Rerun(args) => cmd_rerun(&mut store, args, fmt),
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
         Cmd::HelpAll => cmd_help_all(),
+        Cmd::Schema => cmd_schema(fmt),
     }
+}
+
+fn schema_value() -> serde_json::Value {
+    serde_json::json!({
+        "version": "1.0",
+        "states": ["pending", "verified", "refuted", "unverifiable", "suspect"],
+        "confidence_tiers": [
+            {"name": "derived",    "rank": 1},
+            {"name": "documented", "rank": 2},
+            {"name": "observed",   "rank": 3},
+            {"name": "empirical",  "rank": 4}
+        ],
+        "edge_types": ["depends_on", "tests", "supports", "refines", "refutes"],
+        "output_formats": ["default", "human", "ai"],
+        "exit_codes": {
+            "0": "success",
+            "1": "runtime error (validation, drift, not found, etc)",
+            "2": "argument parse error (missing/invalid flag)"
+        },
+        "error_envelope_ai": {
+            "description": "under --format ai, errors emit a single-line json object on stderr",
+            "fields": {
+                "error":     "string, human message",
+                "kind":      "\"clap\" | \"runtime\"",
+                "code":      "integer exit code",
+                "clap_kind": "clap ErrorKind variant (clap errors only)",
+                "field":     "offending --flag (clap errors only, when extractable)"
+            }
+        },
+        "evidence_methods": {
+            "stat-test": {
+                "required": ["ref", "p_value", "sample_size", "test_type"],
+                "recommended": ["cmd"],
+                "confidence": "empirical",
+                "notes": "file at --ref is content-hashed for drift detection"
+            },
+            "code-test": {
+                "required": ["ref", "exit_code"],
+                "recommended": ["cmd"],
+                "confidence": "empirical",
+                "notes": "file at --ref is content-hashed for drift detection"
+            },
+            "observed": {
+                "required": ["ref"],
+                "recommended": [],
+                "confidence": "observed",
+                "notes": "runtime data; --ref is path/url/hash"
+            },
+            "documented": {
+                "required": ["ref", "quote"],
+                "recommended": [],
+                "confidence": "documented",
+                "notes": "--ref is the doc url; --quote is exact text"
+            },
+            "derived": {
+                "required": ["from (>=2)"],
+                "recommended": [],
+                "confidence": "derived",
+                "notes": "inference from at least 2 other claim ids"
+            }
+        },
+        "env_vars": {
+            "CLAIMS_FORMAT":  "default output format (default|human|ai)",
+            "CLAIMS_DIR":     "working directory containing .claims/",
+            "CLAIMS_AGENT":   "auto-stamp every write with this agent name",
+            "CLAIMS_SESSION": "auto-stamp every write with this session id"
+        }
+    })
+}
+
+fn cmd_schema(fmt: OutputFormat) -> Result<()> {
+    if matches!(fmt, OutputFormat::Ai) {
+        println!("{}", serde_json::to_string(&schema_value())?);
+        return Ok(());
+    }
+    let s = schema_value();
+    println!("clms schema v{}", s["version"].as_str().unwrap_or("?"));
+    println!();
+    println!("states:           {}", s["states"]);
+    println!("confidence tiers: derived < documented < observed < empirical");
+    println!("edge types:       {}", s["edge_types"]);
+    println!("output formats:   {}", s["output_formats"]);
+    println!();
+    println!("evidence method requirements:");
+    if let Some(map) = s["evidence_methods"].as_object() {
+        for (name, spec) in map {
+            let req = spec["required"].to_string();
+            let conf = spec["confidence"].as_str().unwrap_or("?");
+            println!("  {:<11} required={} → {}", name, req, conf);
+        }
+    }
+    println!();
+    println!("env vars: CLAIMS_FORMAT, CLAIMS_DIR, CLAIMS_AGENT, CLAIMS_SESSION");
+    println!("under --format ai: errors emit json envelope on stderr (run `clms --format ai schema` for full spec)");
+    Ok(())
 }
 
 fn cmd_help_all() -> Result<()> {
