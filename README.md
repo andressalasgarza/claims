@@ -132,30 +132,57 @@ cli accepts either: `clms show 42` and `clms show 01HXYZ...` both work.
 
 ## agent integration
 
-for full command reference in one shot (top-level help + every subcommand's
-long help including required-fields tables and examples):
+two discovery commands designed to be run once at session start and cached:
 
 ```bash
-clms help-all
+clms --format ai schema   # machine-readable: requirement matrix per method,
+                          # enum values, error-envelope shape, env vars
+clms help-all             # human-readable: top-level + every subcommand's
+                          # long help including examples and drift behavior
 ```
 
-paste that into your agent's system context once and it knows the whole cli.
-per-command help also works:
+paste either into your agent's system context and it knows the whole cli
+without trial-and-error. per-command help also works:
 
 ```bash
-clms verify --help    # shows method-specific required fields, examples, drift behavior
-clms refute --help    # shows --cascade semantics
-clms rerun  --help    # shows when rerun is meaningful
+clms verify --help    # method-specific required fields, examples, drift behavior
+clms refute --help    # --cascade semantics
+clms rerun  --help    # when rerun is meaningful
 ```
+
+### error envelopes under --format ai
+
+when `--format ai` (or `CLAIMS_FORMAT=ai`) is set, errors emit a single-line
+json object on **stderr** so the same parser handles both happy-path and
+failure paths:
+
+```bash
+$ clms --format ai add
+# stderr: {"clap_kind":"MissingRequiredArgument","code":2,"error":"...","field":"<TEXT>","kind":"clap"}
+# exit 2
+
+$ clms --format ai show 999
+# stderr: {"code":1,"error":"claim #999 not found ...","kind":"runtime"}
+# exit 1
+```
+
+shape: `{ error, kind: "clap"|"runtime", code: 1|2, clap_kind?, field? }`.
+stdout still emits clean json on success.
+
+run `clms --format ai schema` for the canonical envelope spec.
 
 put this in your agent's system prompt:
 
+> at session start, fetch `clms --format ai schema` once and cache it — it
+> tells you exactly which fields each evidence method requires.
+>
 > before writing a claim, list every existing claim that must hold for yours
 > to be true. pass each as `--depends-on <seq>`. if none → empty.
 >
 > never mark a claim verified without producing a reproducible artifact. use
 > the appropriate `--method` and provide all required fields. the cli will
-> reject incomplete evidence with exit 1 — read the error, do not retry blindly.
+> reject incomplete evidence with exit 1 — read the error (or its json
+> envelope on stderr under `--format ai`), do not retry blindly.
 >
 > always pass `--format ai` for json output. set `CLAIMS_AGENT=<your-name>`
 > and `CLAIMS_SESSION=<run-id>` env vars so every write is auto-stamped.
@@ -174,7 +201,11 @@ clms show <id>
 clms timeline [--tag T]
 clms context  [--tag T]
 clms suspect
+clms rerun <id> [--acknowledge-drift]
+clms diff-evidence <id>
 clms reindex
+clms schema           # machine-readable schema (--format ai for json)
+clms help-all         # every subcommand's long help in one dump
 ```
 
 global flags: `--format default|human|ai`, `--dir <path>`.
