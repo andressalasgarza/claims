@@ -177,14 +177,24 @@ enum Cmd {
     Timeline {
         #[arg(long)]
         tag: Option<String>,
+        /// hide claims stamped with these agent values (repeatable). useful for filtering archaeology backfill.
+        #[arg(long = "exclude-agent")]
+        exclude_agent: Vec<String>,
     },
     /// compact verified-only digest for stuffing into agent context.
     Context {
         #[arg(long)]
         tag: Option<String>,
+        /// hide claims stamped with these agent values (repeatable). useful for filtering archaeology backfill.
+        #[arg(long = "exclude-agent")]
+        exclude_agent: Vec<String>,
     },
     /// list all currently-suspect claims (auto-flagged by cascading refutes).
-    Suspect,
+    Suspect {
+        /// hide claims stamped with these agent values (repeatable).
+        #[arg(long = "exclude-agent")]
+        exclude_agent: Vec<String>,
+    },
     /// rebuild the sqlite index from the .claims/*.json source of truth.
     Reindex,
     /// re-execute the stored cmd on a claim's latest runnable evidence and append fresh evidence.
@@ -230,6 +240,12 @@ struct AddArgs {
     agent: Option<String>,
     #[arg(long, env = "CLAIMS_SESSION")]
     session: Option<String>,
+    /// override the auto-stamped git sha. for backfill / archaeology workflows.
+    #[arg(long = "git-sha")]
+    git_sha_override: Option<String>,
+    /// override the auto-stamped created_at timestamp (RFC3339). for backfill / archaeology workflows.
+    #[arg(long = "created-at")]
+    created_at_override: Option<String>,
 }
 
 #[derive(Args)]
@@ -391,15 +407,21 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Verify(args) => cmd_verify(&mut store, args, fmt),
         Cmd::Refute(args) => cmd_refute(&mut store, args, fmt),
         Cmd::Show { id } => cmd_show(&store, id, fmt),
-        Cmd::Timeline { tag } => {
-            print!("{}", output::render_timeline(&store, fmt, tag.as_deref())?);
+        Cmd::Timeline { tag, exclude_agent } => {
+            print!(
+                "{}",
+                output::render_timeline(&store, fmt, tag.as_deref(), &exclude_agent)?
+            );
             Ok(())
         }
-        Cmd::Context { tag } => {
-            print!("{}", output::render_context(&store, tag.as_deref(), fmt)?);
+        Cmd::Context { tag, exclude_agent } => {
+            print!(
+                "{}",
+                output::render_context(&store, tag.as_deref(), fmt, &exclude_agent)?
+            );
             Ok(())
         }
-        Cmd::Suspect => cmd_suspect(&store, fmt),
+        Cmd::Suspect { exclude_agent } => cmd_suspect(&store, fmt, &exclude_agent),
         Cmd::Reindex => {
             let n = store.reindex_all()?;
             println!("reindexed {} claims", n);
@@ -545,6 +567,12 @@ fn build_add_edges(depends_on: &[u64], tests: &[u64]) -> Vec<Edge> {
     edges
 }
 
+fn parse_created_at(s: &str) -> Result<chrono::DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|e| anyhow!("--created-at must be RFC3339 (e.g. 2024-01-15T12:34:56Z): {}", e))
+}
+
 fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
     if a.text.trim().is_empty() {
         return Err(anyhow!("claim text cannot be empty"));
@@ -554,7 +582,11 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
             return Err(anyhow!("referenced claim #{} does not exist", d));
         }
     }
-    let now = Utc::now();
+    let stamp_at = match a.created_at_override.as_deref() {
+        Some(s) => parse_created_at(s)?,
+        None => Utc::now(),
+    };
+    let stamp_sha = a.git_sha_override.clone().or_else(git::current_sha);
     let mut claim = Claim {
         schema_version: SCHEMA_VERSION.into(),
         id: Ulid::new(),
@@ -570,9 +602,9 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
         edges: build_add_edges(&a.depends_on, &a.tests),
         agent: a.agent,
         session: a.session,
-        git_sha: git::current_sha(),
-        created_at: now,
-        updated_at: now,
+        git_sha: stamp_sha,
+        created_at: stamp_at,
+        updated_at: stamp_at,
         content_hash: None,
     };
     store.write_claim(&mut claim)?;
@@ -822,12 +854,23 @@ fn cmd_show(store: &Store, id: String, fmt: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn cmd_suspect(store: &Store, fmt: OutputFormat) -> Result<()> {
+fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
+    if exclude.is_empty() {
+        return false;
+    }
+    match &c.agent {
+        Some(a) => exclude.iter().any(|e| e == a),
+        None => false,
+    }
+}
+
+fn cmd_suspect(store: &Store, fmt: OutputFormat, exclude_agent: &[String]) -> Result<()> {
     let seqs = store.all_seqs()?;
     let claims: Vec<Claim> = seqs
         .iter()
         .filter_map(|s| store.read_claim(*s).ok())
         .filter(|c| c.state == State::Suspect)
+        .filter(|c| !agent_excluded(c, exclude_agent))
         .collect();
     if matches!(fmt, OutputFormat::Ai) {
         let arr: Vec<_> = claims
