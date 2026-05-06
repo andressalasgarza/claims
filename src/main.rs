@@ -17,7 +17,7 @@ use store::{
 use ulid::Ulid;
 
 #[derive(Parser)]
-#[command(name = "claims", version, about = "append-only ledger of falsifiable claims, agent-optimized")]
+#[command(name = "clms", version, about = "append-only ledger of falsifiable claims, agent-optimized")]
 struct Cli {
     #[arg(long, default_value = "default", env = "CLAIMS_FORMAT")]
     format: String,
@@ -302,7 +302,7 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
     let ev = Evidence {
         method,
         r#ref,
-        note: Some(format!("rerun via `claims rerun {}`", seq)),
+        note: Some(format!("rerun via `clms rerun {}`", seq)),
         p_value: None,
         sample_size: None,
         test_type: None,

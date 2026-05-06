@@ -16,40 +16,40 @@ proven. unlike git history or markdown notes, claims enforces:
 ```bash
 cd /path/to/claims
 cargo build --release
-ln -s $(pwd)/target/release/claims ~/.local/bin/claims  # or wherever
+ln -s $(pwd)/target/release/clms ~/.local/bin/clms  # or wherever
 ```
 
 ## quickstart
 
 ```bash
 cd /path/to/your/project
-claims add "polymarket lags binance by ~300ms during BTC moves" --tag market:btc
+clms add "polymarket lags binance by ~300ms during BTC moves" --tag market:btc
 # → #1
 
-claims verify 1 \
+clms verify 1 \
   --method stat-test \
   --ref ./runs/lag_test.json \
   --test-type ks --p-value 0.003 --sample-size 4821 \
   --note "ks-test, 1 week sample"
 # → #1 [verified · empirical]
 
-claims add "we can arb this lag with fast router" --depends-on 1 --tag strategy:arb
+clms add "we can arb this lag with fast router" --depends-on 1 --tag strategy:arb
 # → #2
 
-claims verify 2 --method code-test --ref ./router_bench.sh --exit-code 0
+clms verify 2 --method code-test --ref ./router_bench.sh --exit-code 0
 # → #2 [verified · empirical]
 
 # later, you find the original test had lookahead bias:
-claims add "lag is actually ~500ms not 300ms" --tag market:btc
-claims verify 3 --method stat-test --ref ./runs/lag_v2.json \
+clms add "lag is actually ~500ms not 300ms" --tag market:btc
+clms verify 3 --method stat-test --ref ./runs/lag_v2.json \
   --test-type ks --p-value 0.001 --sample-size 9000
 
-claims refute 1 --by 3 --reason "lookahead bias in v1 test" --cascade
+clms refute 1 --by 3 --reason "lookahead bias in v1 test" --cascade
 # → #1 refuted, #2 auto-flagged suspect (it depended on #1)
 
-claims suspect    # what now needs re-verification
-claims timeline   # full history
-claims context    # compact verified-only digest for agent context-stuffing
+clms suspect    # what now needs re-verification
+clms timeline   # full history
+clms context    # compact verified-only digest for agent context-stuffing
 ```
 
 ## states
@@ -106,7 +106,7 @@ each claim stores its own outgoing edges. reverse lookups via sqlite index.
 ├── 000001.json     ← canonical source of truth (content-hashed)
 ├── 000002.json
 ├── ...
-└── index.db        ← sqlite, rebuilt anytime via `claims reindex`
+└── index.db        ← sqlite, rebuilt anytime via `clms reindex`
 ```
 
 claim files are immutable in spirit. mutations (verify, refute) update the
@@ -119,7 +119,7 @@ every claim has both:
 - `ulid` (e.g. `01HXYZ4K7P9NQXM...`) — globally unique, time-sortable, used internally
 - `seq` (e.g. `42`) — project-local monotonic int, human-friendly
 
-cli accepts either: `claims show 42` and `claims show 01HXYZ...` both work.
+cli accepts either: `clms show 42` and `clms show 01HXYZ...` both work.
 
 ## env
 
@@ -141,20 +141,20 @@ put this in your agent's system prompt:
 > the appropriate `--method` and provide all required fields. the cli will
 > reject incomplete evidence.
 >
-> use `claims context --format ai` at session start to load known truth.
-> use `claims suspect` to find claims that need re-verification.
+> use `clms context --format ai` at session start to load known truth.
+> use `clms suspect` to find claims that need re-verification.
 
 ## commands
 
 ```
-claims add <text> [--tag T] [--depends-on N] [--tests N] [--unverifiable]
-claims verify <id> --method M --ref R [method-specific fields]
-claims refute <id> --by <new_id> --reason "..." [--cascade]
-claims show <id>
-claims timeline [--tag T]
-claims context  [--tag T]
-claims suspect
-claims reindex
+clms add <text> [--tag T] [--depends-on N] [--tests N] [--unverifiable]
+clms verify <id> --method M --ref R [method-specific fields]
+clms refute <id> --by <new_id> --reason "..." [--cascade]
+clms show <id>
+clms timeline [--tag T]
+clms context  [--tag T]
+clms suspect
+clms reindex
 ```
 
 global flags: `--format default|human|ai`, `--dir <path>`.
@@ -162,5 +162,5 @@ global flags: `--format default|human|ai`, `--dir <path>`.
 ## non-goals
 
 - not a task tracker (use marbles or todoist)
-- not an adr tool (those track design decisions, claims tracks empirical findings)
+- not an adr tool (those track design decisions, clms tracks empirical findings)
 - not a notebook (no narrative, no markdown bodies, only structured falsifiable statements)
