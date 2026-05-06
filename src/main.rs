@@ -10,7 +10,10 @@ use colored::*;
 use models::{Claim, Edge, EdgeType, Evidence, EvidenceMethod, State, SCHEMA_VERSION};
 use output::OutputFormat;
 use std::path::PathBuf;
-use store::{cascade_suspect, hash_ref_if_local, validate_evidence, Store};
+use store::{
+    cascade_suspect, detect_drift, hash_ref_if_local, latest_runnable_evidence, run_cmd,
+    validate_evidence, Store,
+};
 use ulid::Ulid;
 
 #[derive(Parser)]
@@ -50,6 +53,10 @@ enum Cmd {
     Suspect,
     /// rebuild the sqlite index from the .claims/*.json source of truth.
     Reindex,
+    /// re-execute the stored cmd on a claim's latest runnable evidence and append fresh evidence.
+    Rerun(RerunArgs),
+    /// show the chronological evolution of evidence on a claim.
+    DiffEvidence { id: String },
 }
 
 #[derive(Args)]
@@ -94,6 +101,20 @@ struct VerifyArgs {
     quote: Option<String>,
     #[arg(long = "from")]
     from: Vec<u64>,
+    /// shell command that produced this evidence. enables `claims rerun <id>` later.
+    #[arg(long)]
+    cmd: Option<String>,
+    /// required when this --ref's content has changed since a prior evidence entry on the same claim.
+    #[arg(long)]
+    acknowledge_drift: bool,
+}
+
+#[derive(Args)]
+struct RerunArgs {
+    id: String,
+    /// also acknowledge drift if the original test file's content changed.
+    #[arg(long)]
+    acknowledge_drift: bool,
 }
 
 #[derive(Args)]
@@ -133,6 +154,8 @@ fn main() -> Result<()> {
             println!("reindexed {} claims", n);
             Ok(())
         }
+        Cmd::Rerun(args) => cmd_rerun(&mut store, args, fmt),
+        Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
     }
 }
 
@@ -200,6 +223,8 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Evidence {
         quote: a.quote.clone(),
         from_claims: a.from.clone(),
         ref_hash: hash_ref_if_local(&a.r#ref),
+        cmd: a.cmd.clone(),
+        stdout_hash: None,
         recorded_at: Utc::now(),
     }
 }
@@ -216,11 +241,146 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
     let m = EvidenceMethod::parse(&a.method)?;
     let ev = build_evidence(&a, m);
     validate_evidence(&ev)?;
+    if let Some((prior_hash, prior_at)) = detect_drift(&claim, &ev.r#ref, &ev.ref_hash) {
+        if !a.acknowledge_drift {
+            return Err(anyhow!(
+                "evidence drift detected on '{}':\n  prior hash: {} (recorded {})\n  new hash:   {}\n\n\
+the file behind this --ref has changed since prior evidence on this claim. \
+if this iteration is intentional, re-run with --acknowledge-drift. if the \
+result contradicts the prior conclusion, you should write a new claim and \
+refute this one instead.",
+                ev.r#ref,
+                &prior_hash[..16.min(prior_hash.len())],
+                prior_at,
+                ev.ref_hash.as_deref().map(|h| &h[..16.min(h.len())]).unwrap_or("-"),
+            ));
+        }
+    }
     claim.evidence.push(ev);
     claim.state = State::Verified;
     claim.updated_at = Utc::now();
     store.write_claim(&mut claim)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);
+    Ok(())
+}
+
+fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
+    let seq = store.resolve(&a.id)?;
+    let mut claim = store.read_claim(seq)?;
+    if claim.state == State::Refuted {
+        return Err(anyhow!(
+            "claim #{} is refuted; rerun is not meaningful. write a new claim.",
+            seq
+        ));
+    }
+    let prior = latest_runnable_evidence(&claim).ok_or_else(|| {
+        anyhow!(
+            "claim #{} has no runnable evidence (need code-test or stat-test with stored --cmd)",
+            seq
+        )
+    })?;
+    let cmd = prior.cmd.clone().unwrap();
+    let r#ref = prior.r#ref.clone();
+    let method = prior.method;
+    println!("rerunning: {}", cmd);
+    let (exit_code, stdout) = run_cmd(&cmd)?;
+    let new_ref_hash = hash_ref_if_local(&r#ref);
+    let stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
+
+    if !a.acknowledge_drift {
+        if let Some((prior_hash, prior_at)) = detect_drift(&claim, &r#ref, &new_ref_hash) {
+            return Err(anyhow!(
+                "test file '{}' has changed since prior evidence:\n  prior hash: {} (recorded {})\n  new hash:   {}\n\nrun with --acknowledge-drift to record this rerun anyway.",
+                r#ref,
+                &prior_hash[..16.min(prior_hash.len())],
+                prior_at,
+                new_ref_hash.as_deref().map(|h| &h[..16.min(h.len())]).unwrap_or("-"),
+            ));
+        }
+    }
+
+    let ev = Evidence {
+        method,
+        r#ref,
+        note: Some(format!("rerun via `claims rerun {}`", seq)),
+        p_value: None,
+        sample_size: None,
+        test_type: None,
+        exit_code: Some(exit_code),
+        quote: None,
+        from_claims: vec![],
+        ref_hash: new_ref_hash,
+        cmd: Some(cmd),
+        stdout_hash,
+        recorded_at: Utc::now(),
+    };
+    claim.evidence.push(ev);
+    claim.updated_at = Utc::now();
+    store.write_claim(&mut claim)?;
+    print!("{}", output::render_claim(&claim, store, fmt)?);
+    Ok(())
+}
+
+fn evidence_extras_diff(e: &Evidence) -> String {
+    match e.method {
+        EvidenceMethod::StatTest => format!(
+            " p={} n={}",
+            e.p_value.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into())
+        ),
+        EvidenceMethod::CodeTest => format!(" exit={}", e.exit_code.unwrap_or(-1)),
+        _ => String::new(),
+    }
+}
+
+fn diff_evidence_ai(claim: &Claim) -> Result<String> {
+    let arr: Vec<_> = claim
+        .evidence
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "recorded_at": e.recorded_at.to_rfc3339(),
+                "method": e.method.as_str(),
+                "ref": e.r#ref,
+                "ref_hash": e.ref_hash,
+                "stdout_hash": e.stdout_hash,
+                "p_value": e.p_value,
+                "sample_size": e.sample_size,
+                "exit_code": e.exit_code,
+                "note": e.note,
+            })
+        })
+        .collect();
+    Ok(serde_json::to_string(&arr)?)
+}
+
+fn print_diff_row(i: usize, e: &Evidence) {
+    let h = e.ref_hash.as_deref().map(|s| &s[..12.min(s.len())]).unwrap_or("-");
+    println!(
+        "  [{}] {}  [{}] ref={} hash={}{}",
+        i + 1,
+        e.recorded_at.format("%Y-%m-%d %H:%M:%S"),
+        e.method.as_str(),
+        e.r#ref,
+        h,
+        evidence_extras_diff(e),
+    );
+    if let Some(n) = &e.note {
+        println!("      note: {}", n);
+    }
+}
+
+fn cmd_diff_evidence(store: &Store, id: String, fmt: OutputFormat) -> Result<()> {
+    let seq = store.resolve(&id)?;
+    let claim = store.read_claim(seq)?;
+    if matches!(fmt, OutputFormat::Ai) {
+        println!("{}", diff_evidence_ai(&claim)?);
+        return Ok(());
+    }
+    println!("#{} evidence evolution ({} entries)", seq, claim.evidence.len());
+    for (i, e) in claim.evidence.iter().enumerate() {
+        print_diff_row(i, e);
+    }
     Ok(())
 }
 
@@ -236,6 +396,8 @@ fn refute_evidence(by: u64, reason: String) -> Evidence {
         quote: None,
         from_claims: vec![by],
         ref_hash: None,
+        cmd: None,
+        stdout_hash: None,
         recorded_at: Utc::now(),
     }
 }
