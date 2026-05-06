@@ -228,7 +228,17 @@ fn render_claim_human(c: &Claim, store: &Store) -> Result<String> {
     Ok(t.to_string())
 }
 
-fn timeline_load(store: &Store, tag: Option<&str>) -> Result<Vec<Claim>> {
+fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
+    if exclude.is_empty() {
+        return false;
+    }
+    match &c.agent {
+        Some(a) => exclude.iter().any(|e| e == a),
+        None => false,
+    }
+}
+
+fn timeline_load(store: &Store, tag: Option<&str>, exclude_agent: &[String]) -> Result<Vec<Claim>> {
     let seqs = store.all_seqs()?;
     let mut claims: Vec<Claim> = seqs
         .iter()
@@ -237,6 +247,7 @@ fn timeline_load(store: &Store, tag: Option<&str>) -> Result<Vec<Claim>> {
             Some(t) => c.tags.iter().any(|x| x == t),
             None => true,
         })
+        .filter(|c| !agent_excluded(c, exclude_agent))
         .collect();
     claims.sort_by_key(|c| c.seq);
     Ok(claims)
@@ -283,15 +294,25 @@ fn timeline_row(c: &Claim) -> String {
     )
 }
 
-pub fn render_timeline(store: &Store, fmt: OutputFormat, tag: Option<&str>) -> Result<String> {
-    let claims = timeline_load(store, tag)?;
+pub fn render_timeline(
+    store: &Store,
+    fmt: OutputFormat,
+    tag: Option<&str>,
+    exclude_agent: &[String],
+) -> Result<String> {
+    let claims = timeline_load(store, tag, exclude_agent)?;
     if fmt == OutputFormat::Ai {
         return timeline_ai(&claims);
     }
     Ok(claims.iter().map(timeline_row).collect())
 }
 
-pub fn render_context(store: &Store, tag: Option<&str>, fmt: OutputFormat) -> Result<String> {
+pub fn render_context(
+    store: &Store,
+    tag: Option<&str>,
+    fmt: OutputFormat,
+    exclude_agent: &[String],
+) -> Result<String> {
     let seqs = store.all_seqs()?;
     let claims: Vec<Claim> = seqs
         .iter()
@@ -301,6 +322,7 @@ pub fn render_context(store: &Store, tag: Option<&str>, fmt: OutputFormat) -> Re
             Some(t) => c.tags.iter().any(|x| x == t),
             None => true,
         })
+        .filter(|c| !agent_excluded(c, exclude_agent))
         .collect();
 
     if fmt == OutputFormat::Ai {
