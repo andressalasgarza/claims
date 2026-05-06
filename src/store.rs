@@ -223,6 +223,46 @@ pub fn hash_ref_if_local(r: &str) -> Option<String> {
     }
 }
 
+/// returns Some((prior_hash, prior_recorded_at_rfc3339)) if `claim` already has
+/// evidence pointing at the same ref path with a different content hash.
+pub fn detect_drift(
+    claim: &Claim,
+    new_ref: &str,
+    new_hash: &Option<String>,
+) -> Option<(String, String)> {
+    let new_hash = new_hash.as_deref()?;
+    for prior in &claim.evidence {
+        if prior.r#ref != new_ref {
+            continue;
+        }
+        if let Some(prior_hash) = &prior.ref_hash {
+            if prior_hash != new_hash {
+                return Some((prior_hash.clone(), prior.recorded_at.to_rfc3339()));
+            }
+        }
+    }
+    None
+}
+
+/// run a shell command, return (exit_code, stdout_bytes).
+pub fn run_cmd(cmd: &str) -> Result<(i32, Vec<u8>)> {
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .with_context(|| format!("failed to execute: {}", cmd))?;
+    Ok((out.status.code().unwrap_or(-1), out.stdout))
+}
+
+/// find the latest evidence on a claim that has a stored cmd. used by `rerun`.
+pub fn latest_runnable_evidence(claim: &Claim) -> Option<&Evidence> {
+    claim
+        .evidence
+        .iter()
+        .rev()
+        .find(|e| e.cmd.is_some() && matches!(e.method, crate::models::EvidenceMethod::CodeTest | crate::models::EvidenceMethod::StatTest))
+}
+
 pub fn cascade_suspect(store: &mut Store, seq: u64) -> Result<Vec<u64>> {
     let dependents = store.transitive_dependents(seq)?;
     for dep in &dependents {

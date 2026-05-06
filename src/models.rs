@@ -103,6 +103,10 @@ pub struct Evidence {
     pub quote: Option<String>,
     pub from_claims: Vec<u64>,
     pub ref_hash: Option<String>,
+    /// shell command that produced this evidence; required for `claims rerun` to re-execute.
+    pub cmd: Option<String>,
+    /// blake3 hash of stdout captured at verify time. drift detection on rerun.
+    pub stdout_hash: Option<String>,
     pub recorded_at: DateTime<Utc>,
 }
 
