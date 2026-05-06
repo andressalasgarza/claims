@@ -132,6 +132,22 @@ cli accepts either: `clms show 42` and `clms show 01HXYZ...` both work.
 
 ## agent integration
 
+for full command reference in one shot (top-level help + every subcommand's
+long help including required-fields tables and examples):
+
+```bash
+clms help-all
+```
+
+paste that into your agent's system context once and it knows the whole cli.
+per-command help also works:
+
+```bash
+clms verify --help    # shows method-specific required fields, examples, drift behavior
+clms refute --help    # shows --cascade semantics
+clms rerun  --help    # shows when rerun is meaningful
+```
+
 put this in your agent's system prompt:
 
 > before writing a claim, list every existing claim that must hold for yours
@@ -139,10 +155,14 @@ put this in your agent's system prompt:
 >
 > never mark a claim verified without producing a reproducible artifact. use
 > the appropriate `--method` and provide all required fields. the cli will
-> reject incomplete evidence.
+> reject incomplete evidence with exit 1 — read the error, do not retry blindly.
+>
+> always pass `--format ai` for json output. set `CLAIMS_AGENT=<your-name>`
+> and `CLAIMS_SESSION=<run-id>` env vars so every write is auto-stamped.
 >
 > use `clms context --format ai` at session start to load known truth.
 > use `clms suspect` to find claims that need re-verification.
+> use `clms diff-evidence <id>` to inspect how a claim's support has evolved.
 
 ## commands
 

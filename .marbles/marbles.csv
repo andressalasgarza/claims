@@ -15,3 +15,6 @@ m-75da,add claims rerun <id>,"re-execute stored cmd, capture new evidence (exit 
 m-8c4a,add claims diff-evidence <id>,show chronological evidence evolution on a claim,closed,1,andressalasgarza,andressalasgarza,andressalasgarza,2026-05-06T20:29:54.762Z,2026-05-06T20:31:46.958Z,,
 m-2d98,add drift gate on verify,"if --ref hash differs from prior evidence on same claim, require --acknowledge-drift",closed,1,andressalasgarza,andressalasgarza,andressalasgarza,2026-05-06T20:29:54.773Z,2026-05-06T20:31:46.958Z,,
 m-41a9,smoke test new commands,,closed,1,andressalasgarza,andressalasgarza,andressalasgarza,2026-05-06T20:29:54.783Z,2026-05-06T20:31:46.958Z,,
+m-a0fe,add after_help with examples + method requirements to each subcommand,,closed,1,andressalasgarza,andressalasgarza,andressalasgarza,2026-05-06T20:42:23.723Z,2026-05-06T20:43:59.923Z,,
+m-f8c2,add 'clms help-all' single-shot dump for agent ctx-stuffing,,closed,1,andressalasgarza,andressalasgarza,andressalasgarza,2026-05-06T20:42:23.735Z,2026-05-06T20:43:59.923Z,,
+m-bd80,agent integration section in README,,closed,1,andressalasgarza,andressalasgarza,andressalasgarza,2026-05-06T20:42:23.746Z,2026-05-06T20:43:59.923Z,,

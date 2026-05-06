@@ -16,8 +16,44 @@ use store::{
 };
 use ulid::Ulid;
 
+const TOP_HELP: &str = r#"
+QUICKSTART
+  clms add "polymarket lags binance ~300ms" --tag market:btc
+  clms verify 1 --method stat-test --ref ./test.py --cmd "python3 ./test.py" \
+               --p-value 0.003 --sample-size 4821 --test-type ks
+  clms add "we can arb this lag" --depends-on 1
+  clms refute 1 --by 3 --reason "lookahead bias" --cascade
+  clms timeline
+  clms context --format ai             # for stuffing into agent context
+
+STATES
+  pending      logged, no evidence yet
+  verified     evidence attached, passed validation
+  refuted      proven wrong, points to replacement claim
+  unverifiable explicitly cannot be tested (subjective, future-dependent)
+  suspect      a claim it depended on was refuted; needs re-verification
+
+CONFIDENCE TIERS (auto-derived from evidence method)
+  empirical    stat-test or code-test    (strongest)
+  observed     observed (runtime data)
+  documented   official primary source
+  derived      inference from >= 2 other claims
+
+FOR AGENTS
+  always run with --format ai for json output. set CLAIMS_AGENT and
+  CLAIMS_SESSION env vars so every write is auto-stamped. before adding a
+  claim, run `clms context --format ai` to load known truth, then list
+  every existing claim that must hold for yours via --depends-on. for full
+  command reference in one shot: `clms help-all`.
+"#;
+
 #[derive(Parser)]
-#[command(name = "clms", version, about = "append-only ledger of falsifiable claims, agent-optimized")]
+#[command(
+    name = "clms",
+    version,
+    about = "append-only ledger of falsifiable claims, agent-optimized",
+    after_help = TOP_HELP,
+)]
 struct Cli {
     #[arg(long, default_value = "default", env = "CLAIMS_FORMAT")]
     format: String,
@@ -29,13 +65,104 @@ struct Cli {
     cmd: Cmd,
 }
 
+const ADD_HELP: &str = r#"
+EXAMPLES
+  clms add "polymarket api rate limit is 60/min" --tag infra
+  clms add "we can arb this lag" --depends-on 1 --depends-on 3 --tag strategy
+  clms add "mm bots withdraw at >50k size" --unverifiable --tag market
+
+NOTES
+  - --depends-on registers prerequisite claims. if any is later refuted with
+    --cascade, this claim auto-flips to suspect.
+  - --unverifiable is for claims you genuinely cannot test (subjective,
+    future-dependent). honesty bucket. otherwise the claim starts pending.
+  - claim text should be falsifiable. "x lags y by ~300ms" not "latency is bad".
+"#;
+
+const VERIFY_HELP: &str = r#"
+EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
+  stat-test   --ref --test-type --p-value --sample-size  [--cmd recommended]
+  code-test   --ref --exit-code                          [--cmd recommended]
+  observed    --ref
+  documented  --ref --quote "<exact text from doc>"
+  derived     --from <id> --from <id>          (min 2)
+
+EXAMPLES
+  clms verify 1 --method stat-test --ref ./test.py \
+    --test-type ks --p-value 0.003 --sample-size 4821 \
+    --cmd "python3 ./test.py"
+
+  clms verify 2 --method code-test --ref ./bench.sh --exit-code 0 \
+    --cmd "bash ./bench.sh"
+
+  clms verify 4 --method documented --ref https://docs.poly.com/api/limits \
+    --quote "default rate limit is 100 requests per minute"
+
+DRIFT
+  if --ref's file content has changed since a prior evidence entry on this
+  same claim, verify will refuse with exit 1 and show both hashes. add
+  --acknowledge-drift if the iteration is intentional. if the new result
+  contradicts the prior conclusion, you should refute the claim and write a
+  new one instead of acknowledging drift.
+
+CONFIDENCE
+  auto-derived from method. cannot be set manually. add stronger evidence
+  later (e.g. stat-test on top of documented) to bump confidence tier.
+"#;
+
+const REFUTE_HELP: &str = r#"
+EXAMPLES
+  clms refute 1 --by 7 --reason "lookahead bias in original test"
+  clms refute 1 --by 7 --reason "..." --cascade   # auto-suspect dependents
+
+NOTES
+  - <id> = claim being refuted. --by <id> = the claim that supersedes it.
+  - the replacement claim must already exist. typical workflow: write the
+    new claim first with `clms add ...`, verify it, THEN refute the old one.
+  - --cascade walks the depends_on graph and flags every transitive
+    dependent of <id> as suspect. without --cascade you get a warning
+    listing them but no auto-flag. use --cascade unless you have a reason
+    not to.
+"#;
+
+const RERUN_HELP: &str = r#"
+EXAMPLES
+  clms rerun 1                       # re-execute stored cmd, append evidence
+  clms rerun 1 --acknowledge-drift   # acknowledge if test file changed
+
+NOTES
+  - requires the original verify to have stored a --cmd. if missing, errors.
+  - finds the latest evidence on the claim with method in {stat-test, code-test}
+    and a stored cmd, re-executes via `sh -c "<cmd>"`, captures exit code +
+    stdout hash + new ref_hash, appends as fresh evidence.
+  - if the test file's content changed since prior evidence, drift is
+    detected and rerun refuses with exit 1 unless --acknowledge-drift is set.
+  - rerun does NOT change the claim's state. use it to confirm a verified
+    claim still holds, or to capture fresh evidence over time.
+"#;
+
+const DIFF_HELP: &str = r#"
+EXAMPLES
+  clms diff-evidence 1
+  clms --format ai diff-evidence 1   # full json for agent inspection
+
+NOTES
+  shows every evidence entry on a claim chronologically with hashes,
+  p-values, exit codes, and notes. useful for spotting silent drift
+  (file hashes that changed between runs) and tracking how a claim's
+  support has evolved over multiple verify/rerun cycles.
+"#;
+
 #[derive(Subcommand)]
 enum Cmd {
     /// log a new claim. exits non-zero if you forgot anything required.
+    #[command(after_help = ADD_HELP)]
     Add(AddArgs),
     /// attach evidence to a claim and mark it verified. method-specific fields are required, no soft warnings.
+    #[command(after_help = VERIFY_HELP)]
     Verify(VerifyArgs),
     /// mark a claim refuted. requires the replacing claim id.
+    #[command(after_help = REFUTE_HELP)]
     Refute(RefuteArgs),
     /// inspect a single claim.
     Show { id: String },
@@ -54,9 +181,13 @@ enum Cmd {
     /// rebuild the sqlite index from the .claims/*.json source of truth.
     Reindex,
     /// re-execute the stored cmd on a claim's latest runnable evidence and append fresh evidence.
+    #[command(after_help = RERUN_HELP)]
     Rerun(RerunArgs),
     /// show the chronological evolution of evidence on a claim.
+    #[command(after_help = DIFF_HELP)]
     DiffEvidence { id: String },
+    /// dump top-level help + every subcommand's help in a single output. for agent context-stuffing.
+    HelpAll,
 }
 
 #[derive(Args)]
@@ -156,7 +287,29 @@ fn main() -> Result<()> {
         }
         Cmd::Rerun(args) => cmd_rerun(&mut store, args, fmt),
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
+        Cmd::HelpAll => cmd_help_all(),
     }
+}
+
+fn cmd_help_all() -> Result<()> {
+    use clap::CommandFactory;
+    let mut top = Cli::command();
+    println!("# top-level\n");
+    top.print_long_help().ok();
+    println!("\n");
+    let names: Vec<String> = top
+        .get_subcommands()
+        .map(|s| s.get_name().to_string())
+        .filter(|n| n != "help-all" && n != "help")
+        .collect();
+    for name in names {
+        if let Some(sub) = top.find_subcommand_mut(&name) {
+            println!("\n# {}\n", name);
+            sub.print_long_help().ok();
+            println!("\n");
+        }
+    }
+    Ok(())
 }
 
 fn build_add_edges(depends_on: &[u64], tests: &[u64]) -> Vec<Edge> {
