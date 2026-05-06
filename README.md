@@ -195,18 +195,59 @@ put this in your agent's system prompt:
 
 ```
 clms add <text> [--tag T] [--depends-on N] [--tests N] [--unverifiable]
+              [--git-sha S] [--created-at RFC3339]   # historical-stamp overrides
 clms verify <id> --method M --ref R [method-specific fields]
 clms refute <id> --by <new_id> --reason "..." [--cascade]
 clms show <id>
-clms timeline [--tag T]
-clms context  [--tag T]
-clms suspect
+clms timeline [--tag T] [--exclude-agent A]
+clms context  [--tag T] [--exclude-agent A]
+clms suspect            [--exclude-agent A]
 clms rerun <id> [--acknowledge-drift]
 clms diff-evidence <id>
 clms reindex
+clms archaeology [--since SHA] [--no-mb] [--dry-run]
 clms schema           # machine-readable schema (--format ai for json)
 clms help-all         # every subcommand's long help in one dump
 ```
+
+## archaeology (shadow-ledger backfill)
+
+`clms archaeology` reconstructs a draft ledger from git history + (optionally)
+your `.marbles/marbles.csv`. it is an **audit tool**, not a time machine.
+
+full design: docs/archaeology.md. tl;dr:
+
+- one claim per commit, evidence quotes the commit subject
+- one claim per mb entry not already linked to a commit (linked via
+  explicit `m-XXXX` reference in the commit msg — no fuzzy matching)
+- `Revert "..."` commits emit refute edges to the original claim
+- mb `blocked_by` translates to `--depends-on` edges
+- every backfilled claim is stamped `agent=archaeology`, with the
+  *historical* commit sha and timestamp (not today's)
+- confidence is **capped at `documented`** by construction. archaeology
+  never emits empirical/observed/derived. re-running historical tests
+  against today's environment is dishonest, so it doesn't.
+
+### filtering backfill from live context
+
+backfill lives in the same `.claims/` dir as real-time entries. distinguish
+via the agent stamp:
+
+```bash
+clms context --exclude-agent archaeology   # only real-time claims
+clms timeline --exclude-agent archaeology
+clms suspect  --exclude-agent archaeology
+```
+
+### what archaeology cannot recover
+
+- claims that died as bad ideas before being committed (survivorship bias)
+- empirical-tier confidence (would require running historical tests against
+  rotted environments — we refuse)
+- semantic refutes ("this refactor proved an earlier assumption wrong")
+- merges across heterogeneous task trackers (no todoist, no jira, etc.)
+
+these are surfaced in `clms archaeology --help`.
 
 global flags: `--format default|human|ai`, `--dir <path>`.
 
