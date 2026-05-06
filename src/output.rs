@@ -1,4 +1,4 @@
-use crate::models::Claim;
+use crate::models::{Claim, EdgeType, Evidence, EvidenceMethod, State};
 use crate::store::Store;
 use anyhow::Result;
 use colored::*;
@@ -33,19 +33,46 @@ pub fn render_claim(c: &Claim, store: &Store, fmt: OutputFormat) -> Result<Strin
     }
 }
 
-fn render_claim_ai(c: &Claim, store: &Store) -> Result<String> {
-    let deps: Vec<u64> = c
-        .edges
+fn deps_of(c: &Claim) -> Vec<u64> {
+    c.edges
         .iter()
-        .filter(|e| e.r#type == crate::models::EdgeType::DependsOn)
+        .filter(|e| e.r#type == EdgeType::DependsOn)
         .map(|e| e.to_seq)
-        .collect();
-    let dependents: Vec<u64> = store
-        .dependents_of(c.seq)?
+        .collect()
+}
+
+fn refutes_of(c: &Claim) -> Vec<u64> {
+    c.edges
+        .iter()
+        .filter(|e| e.r#type == EdgeType::Refutes)
+        .map(|e| e.to_seq)
+        .collect()
+}
+
+fn dependents_seqs(store: &Store, seq: u64) -> Result<Vec<u64>> {
+    Ok(store
+        .dependents_of(seq)?
         .into_iter()
         .filter(|(_, t)| t == "depends_on")
         .map(|(s, _)| s)
-        .collect();
+        .collect())
+}
+
+fn confidence_str(c: &Claim) -> &'static str {
+    c.confidence().map(|t| t.as_str()).unwrap_or("none")
+}
+
+fn state_colored(state: State) -> String {
+    match state {
+        State::Verified => format!("{}", "verified".green().bold()),
+        State::Refuted => format!("{}", "refuted".red().bold()),
+        State::Suspect => format!("{}", "suspect".yellow().bold()),
+        State::Pending => format!("{}", "pending".dimmed()),
+        State::Unverifiable => format!("{}", "unverifiable".magenta()),
+    }
+}
+
+fn render_claim_ai(c: &Claim, store: &Store) -> Result<String> {
     let val = serde_json::json!({
         "seq": c.seq,
         "id": c.id.to_string(),
@@ -53,26 +80,40 @@ fn render_claim_ai(c: &Claim, store: &Store) -> Result<String> {
         "confidence": c.confidence().map(|t| t.as_str()),
         "text": c.text,
         "tags": c.tags,
-        "depends_on": deps,
-        "dependents": dependents,
+        "depends_on": deps_of(c),
+        "dependents": dependents_seqs(store, c.seq)?,
         "evidence_count": c.evidence.len(),
     });
     Ok(serde_json::to_string(&val)?)
 }
 
-fn render_claim_default(c: &Claim, store: &Store) -> Result<String> {
-    let mut s = String::new();
-    let conf = c
-        .confidence()
-        .map(|t| t.as_str())
-        .unwrap_or("none");
-    s.push_str(&format!(
+fn evidence_extras(e: &Evidence) -> String {
+    match e.method {
+        EvidenceMethod::StatTest => format!(
+            " [{}, p={}, n={}]",
+            e.test_type.as_deref().unwrap_or("?"),
+            e.p_value.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into())
+        ),
+        EvidenceMethod::CodeTest => format!(" [exit={}]", e.exit_code.unwrap_or(-1)),
+        EvidenceMethod::Documented => {
+            let q = e.quote.as_deref().unwrap_or("");
+            let q = if q.len() > 60 { &q[..60] } else { q };
+            format!(" [\"{}\"]", q)
+        }
+        EvidenceMethod::Derived => format!(" [from {:?}]", e.from_claims),
+        _ => String::new(),
+    }
+}
+
+fn header_block(c: &Claim) -> String {
+    let mut s = format!(
         "#{:<4} [{} · {}]  {}\n",
         c.seq,
         c.state.as_str(),
-        conf,
+        confidence_str(c),
         c.text
-    ));
+    );
     s.push_str(&format!(
         "id: {}  agent: {}  session: {}  git: {}\n",
         c.id,
@@ -83,104 +124,111 @@ fn render_claim_default(c: &Claim, store: &Store) -> Result<String> {
     if !c.tags.is_empty() {
         s.push_str(&format!("tags: {}\n", c.tags.join(", ")));
     }
-    if !c.edges.is_empty() {
-        s.push_str("edges:\n");
-        for e in &c.edges {
-            s.push_str(&format!("  {} #{}\n", e.r#type.as_str(), e.to_seq));
-        }
+    s
+}
+
+fn edges_block(c: &Claim) -> String {
+    if c.edges.is_empty() {
+        return String::new();
     }
-    let dependents = store.dependents_of(c.seq)?;
-    if !dependents.is_empty() {
-        s.push_str("incoming:\n");
-        for (from, t) in dependents {
-            s.push_str(&format!("  #{} {} this\n", from, t));
-        }
+    let mut s = String::from("edges:\n");
+    for e in &c.edges {
+        s.push_str(&format!("  {} #{}\n", e.r#type.as_str(), e.to_seq));
     }
-    if !c.evidence.is_empty() {
-        s.push_str(&format!("evidence ({}):\n", c.evidence.len()));
-        for e in &c.evidence {
-            let extras = match e.method {
-                crate::models::EvidenceMethod::StatTest => format!(
-                    " [{}, p={}, n={}]",
-                    e.test_type.as_deref().unwrap_or("?"),
-                    e.p_value.map(|v| v.to_string()).unwrap_or("?".into()),
-                    e.sample_size.map(|v| v.to_string()).unwrap_or("?".into())
-                ),
-                crate::models::EvidenceMethod::CodeTest => {
-                    format!(" [exit={}]", e.exit_code.unwrap_or(-1))
-                }
-                crate::models::EvidenceMethod::Documented => {
-                    let q = e.quote.as_deref().unwrap_or("");
-                    let q = if q.len() > 60 { &q[..60] } else { q };
-                    format!(" [\"{}\"]", q)
-                }
-                crate::models::EvidenceMethod::Derived => format!(" [from {:?}]", e.from_claims),
-                _ => String::new(),
-            };
-            s.push_str(&format!(
-                "  [{}] {}{}\n",
-                e.method.as_str(),
-                e.r#ref,
-                extras
-            ));
-            if let Some(n) = &e.note {
-                s.push_str(&format!("    note: {}\n", n));
-            }
-        }
+    s
+}
+
+fn incoming_block(store: &Store, seq: u64) -> Result<String> {
+    let dependents = store.dependents_of(seq)?;
+    if dependents.is_empty() {
+        return Ok(String::new());
+    }
+    let mut s = String::from("incoming:\n");
+    for (from, t) in dependents {
+        s.push_str(&format!("  #{} {} this\n", from, t));
     }
     Ok(s)
+}
+
+fn evidence_block(c: &Claim) -> String {
+    if c.evidence.is_empty() {
+        return String::new();
+    }
+    let mut s = format!("evidence ({}):\n", c.evidence.len());
+    for e in &c.evidence {
+        s.push_str(&format!(
+            "  [{}] {}{}\n",
+            e.method.as_str(),
+            e.r#ref,
+            evidence_extras(e)
+        ));
+        if let Some(n) = &e.note {
+            s.push_str(&format!("    note: {}\n", n));
+        }
+    }
+    s
+}
+
+fn render_claim_default(c: &Claim, store: &Store) -> Result<String> {
+    let mut s = header_block(c);
+    s.push_str(&edges_block(c));
+    s.push_str(&incoming_block(store, c.seq)?);
+    s.push_str(&evidence_block(c));
+    Ok(s)
+}
+
+fn human_edges_str(c: &Claim) -> String {
+    c.edges
+        .iter()
+        .map(|e| format!("{} #{}", e.r#type.as_str(), e.to_seq))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn human_incoming_str(store: &Store, seq: u64) -> Result<String> {
+    let dependents = store.dependents_of(seq)?;
+    Ok(dependents
+        .iter()
+        .map(|(f, ty)| format!("#{} {}", f, ty))
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn human_evidence_str(c: &Claim) -> String {
+    c.evidence
+        .iter()
+        .map(|e| format!("[{}] {}", e.method.as_str(), e.r#ref))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_claim_human(c: &Claim, store: &Store) -> Result<String> {
     let mut t = Table::new();
     t.load_preset(UTF8_FULL);
-    let conf = c.confidence().map(|t| t.as_str()).unwrap_or("none");
-    let badge = match c.state {
-        crate::models::State::Verified => format!("{}", "verified".green().bold()),
-        crate::models::State::Refuted => format!("{}", "refuted".red().bold()),
-        crate::models::State::Suspect => format!("{}", "suspect".yellow().bold()),
-        crate::models::State::Pending => format!("{}", "pending".dimmed()),
-        crate::models::State::Unverifiable => format!("{}", "unverifiable".magenta()),
-    };
     t.add_row(vec!["seq", &format!("#{}", c.seq)]);
     t.add_row(vec!["id", &c.id.to_string()]);
-    t.add_row(vec!["state", &badge]);
-    t.add_row(vec!["confidence", conf]);
+    t.add_row(vec!["state", &state_colored(c.state)]);
+    t.add_row(vec!["confidence", confidence_str(c)]);
     t.add_row(vec!["text", &c.text]);
     if !c.tags.is_empty() {
         t.add_row(vec!["tags", &c.tags.join(", ")]);
     }
-    let edge_str = c
-        .edges
-        .iter()
-        .map(|e| format!("{} #{}", e.r#type.as_str(), e.to_seq))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !edge_str.is_empty() {
-        t.add_row(vec!["edges", &edge_str]);
+    let edges = human_edges_str(c);
+    if !edges.is_empty() {
+        t.add_row(vec!["edges", &edges]);
     }
-    let dependents = store.dependents_of(c.seq)?;
-    if !dependents.is_empty() {
-        let s = dependents
-            .iter()
-            .map(|(f, ty)| format!("#{} {}", f, ty))
-            .collect::<Vec<_>>()
-            .join("\n");
-        t.add_row(vec!["incoming", &s]);
+    let incoming = human_incoming_str(store, c.seq)?;
+    if !incoming.is_empty() {
+        t.add_row(vec!["incoming", &incoming]);
     }
-    if !c.evidence.is_empty() {
-        let s = c
-            .evidence
-            .iter()
-            .map(|e| format!("[{}] {}", e.method.as_str(), e.r#ref))
-            .collect::<Vec<_>>()
-            .join("\n");
-        t.add_row(vec!["evidence", &s]);
+    let evidence = human_evidence_str(c);
+    if !evidence.is_empty() {
+        t.add_row(vec!["evidence", &evidence]);
     }
     Ok(t.to_string())
 }
 
-pub fn render_timeline(store: &Store, fmt: OutputFormat, tag: Option<&str>) -> Result<String> {
+fn timeline_load(store: &Store, tag: Option<&str>) -> Result<Vec<Claim>> {
     let seqs = store.all_seqs()?;
     let mut claims: Vec<Claim> = seqs
         .iter()
@@ -191,56 +239,56 @@ pub fn render_timeline(store: &Store, fmt: OutputFormat, tag: Option<&str>) -> R
         })
         .collect();
     claims.sort_by_key(|c| c.seq);
+    Ok(claims)
+}
 
-    if fmt == OutputFormat::Ai {
-        let arr: Vec<_> = claims
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "seq": c.seq,
-                    "state": c.state.as_str(),
-                    "confidence": c.confidence().map(|t| t.as_str()),
-                    "text": c.text,
-                    "tags": c.tags,
-                    "depends_on": c.edges.iter()
-                        .filter(|e| e.r#type == crate::models::EdgeType::DependsOn)
-                        .map(|e| e.to_seq).collect::<Vec<_>>(),
-                    "refutes": c.edges.iter()
-                        .filter(|e| e.r#type == crate::models::EdgeType::Refutes)
-                        .map(|e| e.to_seq).collect::<Vec<_>>(),
-                })
+fn timeline_ai(claims: &[Claim]) -> Result<String> {
+    let arr: Vec<_> = claims
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "seq": c.seq,
+                "state": c.state.as_str(),
+                "confidence": c.confidence().map(|t| t.as_str()),
+                "text": c.text,
+                "tags": c.tags,
+                "depends_on": deps_of(c),
+                "refutes": refutes_of(c),
             })
-            .collect();
-        return Ok(serde_json::to_string(&arr)?);
-    }
+        })
+        .collect();
+    Ok(serde_json::to_string(&arr)?)
+}
 
-    let mut out = String::new();
-    for c in &claims {
-        let conf = c.confidence().map(|t| t.as_str()).unwrap_or("-");
-        let state_str = match c.state {
-            crate::models::State::Verified => format!("{}", "verified".green()),
-            crate::models::State::Refuted => format!("{}", "refuted".red().dimmed()),
-            crate::models::State::Suspect => format!("{}", "suspect".yellow()),
-            crate::models::State::Pending => format!("{}", "pending".dimmed()),
-            crate::models::State::Unverifiable => format!("{}", "unverifiable".magenta()),
-        };
-        let edges = c
-            .edges
-            .iter()
-            .map(|e| format!("{} #{}", e.r#type.as_str(), e.to_seq))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let edges_str = if edges.is_empty() {
-            String::new()
-        } else {
-            format!("  ({})", edges)
-        };
-        out.push_str(&format!(
-            "#{:<4} [{:<12} · {:<10}] {}{}\n",
-            c.seq, state_str, conf, c.text, edges_str
-        ));
+fn timeline_row(c: &Claim) -> String {
+    let conf = confidence_str(c);
+    let edges = c
+        .edges
+        .iter()
+        .map(|e| format!("{} #{}", e.r#type.as_str(), e.to_seq))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let edges_str = if edges.is_empty() {
+        String::new()
+    } else {
+        format!("  ({})", edges)
+    };
+    format!(
+        "#{:<4} [{:<12} · {:<10}] {}{}\n",
+        c.seq,
+        state_colored(c.state),
+        conf,
+        c.text,
+        edges_str
+    )
+}
+
+pub fn render_timeline(store: &Store, fmt: OutputFormat, tag: Option<&str>) -> Result<String> {
+    let claims = timeline_load(store, tag)?;
+    if fmt == OutputFormat::Ai {
+        return timeline_ai(&claims);
     }
-    Ok(out)
+    Ok(claims.iter().map(timeline_row).collect())
 }
 
 pub fn render_context(store: &Store, tag: Option<&str>, fmt: OutputFormat) -> Result<String> {
@@ -248,7 +296,7 @@ pub fn render_context(store: &Store, tag: Option<&str>, fmt: OutputFormat) -> Re
     let claims: Vec<Claim> = seqs
         .iter()
         .filter_map(|s| store.read_claim(*s).ok())
-        .filter(|c| matches!(c.state, crate::models::State::Verified))
+        .filter(|c| matches!(c.state, State::Verified))
         .filter(|c| match tag {
             Some(t) => c.tags.iter().any(|x| x == t),
             None => true,
@@ -270,14 +318,9 @@ pub fn render_context(store: &Store, tag: Option<&str>, fmt: OutputFormat) -> Re
         return Ok(serde_json::to_string(&arr)?);
     }
 
-    let mut out = String::new();
-    out.push_str(&format!(
-        "verified claims context ({} entries)\n",
-        claims.len()
-    ));
+    let mut out = format!("verified claims context ({} entries)\n", claims.len());
     for c in &claims {
-        let conf = c.confidence().map(|t| t.as_str()).unwrap_or("-");
-        out.push_str(&format!("  #{} [{}] {}\n", c.seq, conf, c.text));
+        out.push_str(&format!("  #{} [{}] {}\n", c.seq, confidence_str(c), c.text));
     }
     Ok(out)
 }
