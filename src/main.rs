@@ -1,3 +1,4 @@
+mod archaeology;
 mod git;
 mod models;
 mod output;
@@ -208,7 +209,49 @@ enum Cmd {
     /// dump machine-readable schema (commands, evidence-method requirements, enums). for agent self-discovery.
     #[command(after_help = SCHEMA_HELP)]
     Schema,
+    /// reconstruct a shadow ledger from git + (optionally) mb history. cap at documented confidence.
+    #[command(after_help = ARCHAEOLOGY_HELP)]
+    Archaeology(ArchaeologyArgs),
 }
+
+#[derive(Args)]
+struct ArchaeologyArgs {
+    /// start from this sha (default: full history from root)
+    #[arg(long)]
+    since: Option<String>,
+    /// skip .marbles/marbles.csv even if present
+    #[arg(long = "no-mb")]
+    no_mb: bool,
+    /// print planned actions, do not write to .claims/
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+}
+
+const ARCHAEOLOGY_HELP: &str = r#"
+EXAMPLES
+  clms archaeology --dry-run                  # preview plan, no writes
+  clms --format ai archaeology --dry-run      # plan as json
+  clms archaeology --since v1.0.0             # only commits since tag/sha
+  clms archaeology --no-mb                    # ignore .marbles/ even if present
+
+SCOPE
+  reconstructs a SHADOW ledger from existing repo signals. NOT equivalent
+  to having used clms from inception. confidence is capped at 'documented'
+  by construction — never empirical, never observed, never derived.
+
+SOURCES
+  git    universal, always on. one claim per commit, evidence quotes commit
+         msg subject. explicit `Revert \"...\"` commits emit refute edges.
+  mb     optional. auto-detected via .marbles/marbles.csv. one claim per
+         mb entry not already linked to a commit. blocked_by → --depends-on.
+         dedup with git happens via explicit m-XXXX reference in commit msg.
+
+STAMPING
+  every backfilled claim:
+    agent=archaeology  session=backfill-<rfc3339-ts>
+    git_sha=<historical>  created_at=<historical>
+  filter live agent context with: clms context --exclude-agent archaeology
+"#;
 
 const SCHEMA_HELP: &str = r#"
 EXAMPLES
@@ -431,6 +474,15 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
         Cmd::HelpAll => cmd_help_all(),
         Cmd::Schema => cmd_schema(fmt),
+        Cmd::Archaeology(args) => archaeology::run(
+            &mut store,
+            archaeology::Args {
+                since: args.since,
+                no_mb: args.no_mb,
+                dry_run: args.dry_run,
+            },
+            fmt,
+        ),
     }
 }
 
