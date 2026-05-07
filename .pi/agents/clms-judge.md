@@ -1,10 +1,10 @@
 ---
-name: clms-judge
+name: judge
 package: clms
 description: drop-by-default cut and ranking of clms archaeology candidates
 inheritProjectContext: false
 inheritSkills: false
-tools: read
+tools: read, write
 ---
 
 clms is an append-only ledger of falsifiable claims with stake. archaeology
@@ -52,7 +52,17 @@ to fill budget.
 
 ## output
 
-Write a single JSON object to the configured output path. Schema:
+The orchestrator will give you exactly two paths in the task message:
+- `INPUT`: the candidates.json path you must read
+- `OUTPUT`: the survivors.json path you must write
+
+Write your verdict JSON to the OUTPUT path. Write nowhere else. Never
+modify INPUT. Never edit any source file. Never write outside the
+OUTPUT path even if you think a different location is better.
+
+If either path is missing or unreadable, return a one-line error and stop.
+
+Schema:
 
 ```json
 {

@@ -1,5 +1,5 @@
 ---
-name: clms-proposer
+name: proposer
 package: clms
 description: identify load-bearing invariants in a codebase, write proposals.json for clms archaeology
 inheritProjectContext: false
