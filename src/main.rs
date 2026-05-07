@@ -221,6 +221,15 @@ enum Cmd {
         #[command(subcommand)]
         sub: ArchaeologySub,
     },
+    /// install the bundled clms.judge / clms.proposer pi-subagents to user scope. idempotent.
+    InstallAgents {
+        /// overwrite existing files even if present
+        #[arg(long)]
+        force: bool,
+        /// dry-run: print what would be written without touching disk
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -509,6 +518,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
         Cmd::HelpAll => cmd_help_all(),
         Cmd::Schema => cmd_schema(fmt),
+        Cmd::InstallAgents { force, dry_run } => cmd_install_agents(fmt, force, dry_run),
         Cmd::Archaeology { sub } => {
             let s = match sub {
                 ArchaeologySub::Suggest(a) => archaeology::Sub::Suggest(archaeology::SuggestArgs {
@@ -673,6 +683,70 @@ fn cmd_schema(fmt: OutputFormat) -> Result<()> {
     println!();
     println!("env vars: CLAIMS_FORMAT, CLAIMS_DIR, CLAIMS_AGENT, CLAIMS_SESSION");
     println!("under --format ai: errors emit json envelope on stderr (run `clms --format ai schema` for full spec)");
+    Ok(())
+}
+
+// embedded at compile time so `cargo install` / homebrew binaries ship the
+// agents without needing a source tree. updates require a rebuild.
+const JUDGE_AGENT_MD: &str = include_str!("../.pi/agents/clms-judge.md");
+const PROPOSER_AGENT_MD: &str = include_str!("../.pi/agents/clms-proposer.md");
+
+fn cmd_install_agents(fmt: OutputFormat, force: bool, dry_run: bool) -> Result<()> {
+    let home = std::env::var("HOME").map_err(|_| anyhow!("HOME not set"))?;
+    let agents_dir = std::path::PathBuf::from(&home).join(".pi/agent/agents/clms");
+    let judge_path = agents_dir.join("judge.md");
+    let proposer_path = agents_dir.join("proposer.md");
+    let mut written = Vec::new();
+    let mut skipped = Vec::new();
+
+    if !dry_run {
+        std::fs::create_dir_all(&agents_dir).map_err(|e| anyhow!("mkdir {}: {}", agents_dir.display(), e))?;
+    }
+    for (path, body, label) in [
+        (&judge_path, JUDGE_AGENT_MD, "clms.judge"),
+        (&proposer_path, PROPOSER_AGENT_MD, "clms.proposer"),
+    ] {
+        let exists = path.exists();
+        if exists && !force {
+            skipped.push((label.to_string(), path.display().to_string()));
+            continue;
+        }
+        if !dry_run {
+            std::fs::write(path, body).map_err(|e| anyhow!("write {}: {}", path.display(), e))?;
+        }
+        written.push((label.to_string(), path.display().to_string()));
+    }
+
+    match fmt {
+        OutputFormat::Ai => {
+            let v = serde_json::json!({
+                "action": "install-agents",
+                "dry_run": dry_run,
+                "force": force,
+                "agents_dir": agents_dir.display().to_string(),
+                "written": written.iter().map(|(a, p)| serde_json::json!({"agent": a, "path": p})).collect::<Vec<_>>(),
+                "skipped": skipped.iter().map(|(a, p)| serde_json::json!({"agent": a, "path": p, "reason": "exists; pass --force to overwrite"})).collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&v)?);
+        }
+        _ => {
+            if dry_run {
+                println!("dry-run: would install to {}", agents_dir.display());
+            } else {
+                println!("installed to {}", agents_dir.display());
+            }
+            for (a, p) in &written {
+                println!("  written  {} -> {}", a, p);
+            }
+            for (a, p) in &skipped {
+                println!("  skipped  {} -> {} (exists; pass --force to overwrite)", a, p);
+            }
+            if !dry_run && !written.is_empty() {
+                println!();
+                println!("verify with: subagent({{ action: \"list\" }})  // expect clms.judge + clms.proposer");
+            }
+        }
+    }
     Ok(())
 }
 

@@ -248,35 +248,65 @@ oracle review caught the structural problems:
 single drop-by-default judge captures the same adversarial pressure with
 ~20% the tokens, half the stochastic surface, and no role-bias.
 
-### the canonical chain (pi-subagents reference)
+### why the parent must NOT inline-judge
+
+the most common failure mode in early dogfooding: the parent agent reads
+candidates.json itself, decides keep/drop, and writes survivors.json
+directly. this looks faster but defeats the design — an agent grading
+its own context-influenced harvest is biased toward keeping things, since
+it just spent tokens fetching them. the discrimination signal collapses.
+
+the orchestration invariant: **the parent ALWAYS spawns `clms.judge`**.
+the judge runs in fresh context (`inheritProjectContext: false`,
+`inheritSkills: false`) so it sees only the candidates.json text and
+the agent prompt — no parent history, no prior arguments, no
+context-influenced bias.
+
+### install
+
+for the orchestrator to discover the agent, it must be at user scope
+(or project scope when cwd is the project). easiest path:
+
+```bash
+clms install-agents          # writes ~/.pi/agent/agents/clms/{judge,proposer}.md
+clms install-agents --force  # overwrite when you upgrade clms
+```
+
+verify discovery:
+
+```typescript
+subagent({ action: "list" })  // expect clms.judge + clms.proposer
+```
+
+### the canonical spawn (pi-subagents reference)
 
 ```typescript
 subagent({
   agent: "clms.judge",
-  task: `
-    K=8 cap on survivors. Drop is default.
-    Read candidates.json from {chain_dir}/candidates.json.
-    Write survivors.json to {chain_dir}/survivors.json.
-  `,
-  reads: ["candidates.json"],
-  output: "survivors.json",
-  context: "fresh"
+  task: `apply drop-by-default judgement.
+    INPUT: ${ABS_PATH}/candidates.json
+    OUTPUT: ${ABS_PATH}/survivors.json
+    return: "wrote N survivors, M cuts".`,
 })
 ```
 
+the judge has `tools: read, write`; it persists survivors.json itself
+instead of streaming JSON back through the parent (more reliable than
+asking the parent to faithfully serialize).
+
 ### the agent file (.pi/agents/clms-judge.md)
 
-shipped at project scope from the clms repo so any consumer that clones it
-gets the agent auto-discovered.
+shipped in the clms repo and installed to user scope by `clms install-agents`.
+the runtime name is `clms.judge` (frontmatter: `name: judge`, `package: clms`).
 
 ```markdown
 ---
-name: clms-judge
+name: judge
 package: clms
 description: drop-by-default cut and ranking of archaeology candidates
 inheritProjectContext: false
 inheritSkills: false
-tools: read
+tools: read, write
 ---
 
 clms is an append-only ledger of falsifiable claims with stake. archaeology

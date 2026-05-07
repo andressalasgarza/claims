@@ -19,6 +19,22 @@ cargo build --release
 ln -s $(pwd)/target/release/clms ~/.local/bin/clms  # or wherever
 ```
 
+for the `clms archaeology` workflow, also install the bundled
+pi-subagents (`clms.judge`, `clms.proposer`) to user scope so any
+orchestrator can spawn them regardless of cwd:
+
+```bash
+clms install-agents          # writes to ~/.pi/agent/agents/clms/
+clms install-agents --force  # overwrite if you've upgraded clms
+```
+
+verify:
+
+```bash
+# from any directory
+subagent({ action: "list" })  # expect clms.judge + clms.proposer
+```
+
 ## quickstart
 
 ```bash
@@ -240,16 +256,13 @@ fn append_to_ledger(...) { ... }
 ```
 
 ```bash
-# 0. (cold-start, optional): proposer agent seeds .archaeology/proposals.json
-#    -> reads codebase, identifies invariants, writes ≤ 10 proposals
-#    -> NO chat review; the judge phase is the discrimination gate
+# 0. (cold-start, optional): spawn clms.proposer to seed proposals.json
+#    NO chat review; the judge phase is the discrimination gate
 
 # 1. harvest candidates (reads source annotations + proposals.json if present)
 clms archaeology suggest -o candidates.json
 
-# 2. orchestrate the debate (pi-subagents example)
-#    -> the clms.judge agent reads candidates.json, returns survivors.json
-#    -> see docs/archaeology.md "phase 2" for the chain invocation
+# 2. spawn clms.judge to debate -> writes survivors.json
 
 # 3. ingest survivors as pending claims
 clms archaeology commit --from-plan survivors.json --keep 8
@@ -257,6 +270,47 @@ clms archaeology commit --from-plan survivors.json --keep 8
 # 4. promote each pending claim to verified when you actually run the test
 clms verify <id> --method code-test --ref <path> --exit-code 0 --cmd "..."
 ```
+
+### orchestration recipe (pi-subagents)
+
+this is the full no-human-in-the-loop pipeline. the parent agent spawns
+specialized children for the generative/discriminative steps; clms
+handles the deterministic harvest + commit phases.
+
+**important: the parent agent must DELEGATE to `clms.judge`, not
+inline-judge.** the judge is a fresh-context, drop-by-default discriminator
+whose verdict is unbiased by the parent's prior beliefs. an agent grading
+its own work has obvious bias and was the original UX failure that
+motivated this design.
+
+```typescript
+// step 0 (cold-start only) — proposer reads code, writes proposals.json
+subagent({
+  agent: "clms.proposer",
+  task: `read the codebase under ${PROJECT_DIR}, identify load-bearing
+    invariants, write up to 10 proposals to ${PROJECT_DIR}/.archaeology/proposals.json.
+    do not modify any source file. return: "wrote N proposals".`,
+})
+
+// step 1 — harvester (deterministic, no agent needed)
+// shell: clms archaeology suggest -o candidates.json
+
+// step 2 — judge spawned by orchestrator (NOT inline-judged)
+subagent({
+  agent: "clms.judge",
+  task: `apply drop-by-default judgement.
+    INPUT: ${PROJECT_DIR}/candidates.json
+    OUTPUT: ${PROJECT_DIR}/survivors.json
+    return: "wrote N survivors, M cuts".`,
+})
+
+// step 3 — commit (deterministic, no agent needed)
+// shell: clms archaeology commit --from-plan survivors.json
+```
+
+both agents are installed at user scope by `clms install-agents`. they
+declare `inheritProjectContext: false` and `inheritSkills: false` so they
+run against the explicit task input only, not parent conversation drift.
 
 ### filtering backfill from live context
 
