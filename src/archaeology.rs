@@ -31,7 +31,10 @@ pub const MAX_CEILING: usize = 50;
 const CLAIM_MARKERS: &[&str] = &["// clms-claim:", "# clms-claim:"];
 const EVIDENCE_MARKERS: &[&str] = &["// clms-evidence:", "# clms-evidence:"];
 
-const SOURCE_EXTS: &[&str] = &["rs", "py", "ts", "tsx", "js", "jsx", "go", "md"];
+// source code only. markdown explicitly excluded — docs use `// clms-claim:`
+// in code-block examples to demonstrate the syntax, but those are
+// illustrations, not assertions. annotations belong in actual source.
+const SOURCE_EXTS: &[&str] = &["rs", "py", "ts", "tsx", "js", "jsx", "go"];
 const IGNORE_DIRS: &[&str] = &[
     ".git",
     "target",
