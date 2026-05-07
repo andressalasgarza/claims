@@ -124,6 +124,16 @@ fn cmd_suggest(args: SuggestArgs, fmt: OutputFormat) -> Result<()> {
     let root = std::env::current_dir().context("get cwd")?;
 
     let mut all = harvest_annotations(&root)?;
+    let proposals_count = {
+        let proposals = harvest_proposals(&root)?;
+        let n = proposals.len();
+        all.extend(proposals);
+        n
+    };
+    // dedup by candidate_id (proposal can shadow an existing source annotation
+    // if both encode the same kind|text|where; keep first occurrence)
+    let mut seen: HashSet<String> = HashSet::new();
+    all.retain(|c| seen.insert(c.id.clone()));
     all.sort_by(|a, b| {
         (&a.source_meta.file, a.source_meta.line)
             .cmp(&(&b.source_meta.file, b.source_meta.line))
@@ -141,6 +151,8 @@ fn cmd_suggest(args: SuggestArgs, fmt: OutputFormat) -> Result<()> {
             "extracted_total": actual,
             "truncated": truncated,
             "sources_enabled": sources_enabled,
+            "from_source": actual - proposals_count,
+            "from_proposals": proposals_count,
         },
         "candidates": all,
     });
@@ -214,6 +226,91 @@ fn harvest_annotations(root: &Path) -> Result<Vec<Candidate>> {
         scan_file(f, root, &raw, &mut candidates);
     }
     Ok(candidates)
+}
+
+// agent intent surface. parallel to in-source `// clms-claim:` annotations.
+// schema: { "version": "archaeology/v2", "proposals": [<row>, ...] }
+// row:    { "text": str, "where": str, "snippet"?: str, "suggested_evidence"?: [...] }
+//
+// candidates emitted from this surface use the same kind (`clms-claim-annotation`)
+// as in-source annotations, so the judge agent sees them identically. distinguish
+// origin via source_meta.file (== ".archaeology/proposals.json").
+fn harvest_proposals(root: &Path) -> Result<Vec<Candidate>> {
+    let path = root.join(".archaeology/proposals.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("read {}", path.display()))?;
+    let v: serde_json::Value = serde_json::from_str(&raw)
+        .with_context(|| format!("parse {}", path.display()))?;
+
+    let version = v["version"].as_str().unwrap_or("");
+    if version != SCHEMA_VERSION {
+        bail!(
+            "{}: expected version '{}', got '{}'",
+            path.display(), SCHEMA_VERSION, version
+        );
+    }
+    let arr = v["proposals"]
+        .as_array()
+        .ok_or_else(|| anyhow!("{}: 'proposals' must be an array", path.display()))?;
+
+    let manifest_rel = ".archaeology/proposals.json";
+    let mut out = Vec::new();
+    for (idx, row) in arr.iter().enumerate() {
+        let text = row["text"]
+            .as_str()
+            .ok_or_else(|| anyhow!("{}: proposals[{}].text missing", path.display(), idx))?
+            .trim()
+            .to_string();
+        if text.is_empty() {
+            continue;
+        }
+        let where_str = row["where"]
+            .as_str()
+            .ok_or_else(|| anyhow!("{}: proposals[{}].where missing", path.display(), idx))?
+            .to_string();
+        let snippet = row["snippet"]
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| format!("// (proposal) clms-claim: {}", text));
+        let mut suggested_evidence = Vec::new();
+        if let Some(ev_arr) = row["suggested_evidence"].as_array() {
+            for ev in ev_arr {
+                let method = ev["method"].as_str().unwrap_or("").to_string();
+                if method.is_empty() {
+                    continue;
+                }
+                suggested_evidence.push(SuggestedEvidence {
+                    method,
+                    cmd: ev["cmd"].as_str().map(String::from),
+                    r#ref: ev["ref"].as_str().map(String::from),
+                    note: ev["note"]
+                        .as_str()
+                        .unwrap_or("advisory only; not run by archaeology. promotion via `clms verify`")
+                        .to_string(),
+                });
+            }
+        }
+        let id = candidate_id("clms-claim-annotation", &text, &where_str);
+        out.push(Candidate {
+            id,
+            kind: "clms-claim-annotation".into(),
+            text,
+            stake_signal: StakeSignal {
+                r#where: where_str,
+                snippet,
+            },
+            suggested_evidence,
+            source_meta: SourceMeta {
+                file: manifest_rel.to_string(),
+                line: (idx as u32) + 1,
+            },
+            debate: None,
+        });
+    }
+    Ok(out)
 }
 
 fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {

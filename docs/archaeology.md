@@ -80,6 +80,74 @@ scanning for `// clms-claim:` and `# clms-claim:` is a deterministic, fast,
 zero-false-positive signal. it's also a quiet contract: agents writing code
 declare invariants inline; archaeology harvests them without prose-mining.
 
+### intent surfaces (cold-start handling)
+
+the harvester reads from TWO surfaces, both emitting `clms-claim-annotation`
+candidates:
+
+| surface | written by | location | persistence |
+|---|---|---|---|
+| in-source annotations | humans | `// clms-claim:` / `# clms-claim:` in `*.rs/.py/.ts/.go/...` | durable, version-controlled |
+| proposals manifest | agents | `.archaeology/proposals.json` | ephemeral, regenerable |
+
+rationale: a fresh repo has no annotations, so `suggest` would return zero
+candidates. requiring humans to manually annotate before any archaeology
+value is delivered is a cold-start failure mode. the proposals manifest
+lets a generative subagent (`.pi/agents/clms-proposer.md`) seed the
+harvester without polluting source code with potentially-bad comments.
+
+the pair is adversarially correct:
+
+- **proposer** = generative, low-rigor, may be sloppy
+- **judge** = discriminative, drop-by-default, ruthless
+
+bad proposals get dropped at phase 2 instead of surviving as dead comments
+in the codebase. if a proposal IS strong and you want it to persist across
+future re-harvests, cherry-pick it into source as a real `// clms-claim:`
+comment after `clms verify` confirms it.
+
+#### proposals.json schema
+
+```json
+{
+  "version": "archaeology/v2",
+  "proposals": [
+    {
+      "text": "ledger writes are append-only",
+      "where": "src/store.rs:142",
+      "snippet": "// (proposal) clms-claim: ledger writes are append-only",
+      "suggested_evidence": [
+        {"method": "code-test", "cmd": "cargo test test_append_only"}
+      ]
+    }
+  ]
+}
+```
+
+- `text` and `where` required; `snippet` and `suggested_evidence` optional
+- candidate_id is hash-stable across re-runs (kind + text + where), so
+  judge transcripts re-attach if you regenerate proposals.json with the
+  same content
+- harvester refuses on missing fields or wrong schema version (single-line
+  json envelope under `--format ai`)
+- candidates from this surface have `source_meta.file = ".archaeology/proposals.json"`,
+  so the judge can apply origin-aware skepticism if desired
+
+#### the no-human-in-the-loop default
+
+four-step pipeline, zero chat-review gates:
+
+```bash
+# (orchestrator runs clms-proposer agent: reads code, writes proposals.json)
+clms archaeology suggest -o candidates.json
+# (orchestrator runs clms-judge agent: reads candidates, writes survivors.json)
+clms archaeology commit --from-plan survivors.json
+```
+
+the agent pair (proposer + judge) IS the review. clms remains orchestrator-
+agnostic; pi-subagents is the reference implementation but any orchestrator
+that respects both agents' contracts works.
+
 ### bounded-N rule
 
 ```
@@ -99,7 +167,11 @@ emits top-N. tie-break by source priority (table above, top to bottom).
   "harvester": {
     "max": 10,
     "actual": 7,
-    "sources_enabled": ["clms-claim-annotation", "test-name-invariant", "mb-verify-task"]
+    "extracted_total": 7,
+    "truncated": 0,
+    "sources_enabled": ["clms-claim-annotation"],
+    "from_source": 4,
+    "from_proposals": 3
   },
   "candidates": [
     {
