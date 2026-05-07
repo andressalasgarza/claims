@@ -54,10 +54,11 @@ FOR AGENTS
     {"error":"...","kind":"clap|runtime","code":1|2,...}
   exit 2 = bad args (clap), exit 1 = runtime (validation, drift, not found).
 
-  archaeology backfill (git + mb → shadow ledger, capped at documented):
-    clms archaeology --dry-run            # preview
-    clms archaeology                      # execute
-    clms context --exclude-agent archaeology  # hide backfill from live ctx
+  archaeology v2 (candidacy engine, never verifies):
+    clms archaeology suggest -o candidates.json     # phase 1: harvest
+    # then debate via pi-subagents .pi/agents/clms-judge.md → survivors.json
+    clms archaeology commit --from-plan survivors.json   # phase 3: pending
+    clms context --exclude-agent archaeology             # filter from ctx
 "#;
 
 #[derive(Parser)]
@@ -531,18 +532,42 @@ fn run(cli: Cli) -> Result<()> {
 
 fn schema_value() -> serde_json::Value {
     serde_json::json!({
-        "version": "1.1",
+        "version": "2.0",
         "archaeology": {
+            "version": "archaeology/v2",
+            "contract": "candidacy engine, NOT verification engine. always writes state=pending. promotion via clms verify.",
             "agent_stamp": "archaeology",
             "session_stamp_format": "backfill-<rfc3339-ts>",
-            "confidence_cap": "documented",
-            "sources": {
-                "git": "always on; one claim per commit, evidence quotes commit subject",
-                "mb":  "optional; auto-detected via .marbles/marbles.csv; --no-mb to skip"
+            "phases": {
+                "1_harvest": "clms archaeology suggest. byte-walks source for // clms-claim: and # clms-claim:. bounded N (default 10, ceiling 50).",
+                "2_debate": "orchestrator-agnostic. pi-subagents reference impl uses .pi/agents/clms-judge.md (clms.judge runtime). drop is default.",
+                "3_commit": "clms archaeology commit --from-plan <survivors.json>. validates schema, writes state=pending claims with archaeology_meta. transcripts at .archaeology/<session>/."
             },
-            "refute_detection": "explicit `Revert \"...\"` commits only (no semantic refutes)",
-            "dedup_rule": "git <-> mb merge requires explicit m-XXXX reference in commit msg",
-            "filter_live_context": "--exclude-agent archaeology on context/timeline/suspect"
+            "signals_v2": [
+                {"kind": "clms-claim-annotation", "shipped": true, "description": "// clms-claim: <text> or # clms-claim: <text> in source code"}
+            ],
+            "signals_deferred": [
+                "test-name-invariant", "type-marked", "mb-verify-task",
+                "cm-structural", "readme-assertion", "docstring-invariant"
+            ],
+            "protocol": {
+                "candidates_schema_version": "archaeology/v2",
+                "survivors_invariants": [
+                    "input is candidates.json matching the schema",
+                    "output is survivors.json with debate.judge per row and keep:bool per row",
+                    "drop is structural default (keep:true requires affirmative debate.judge.verdict=keep)",
+                    "K cap is post-hoc enforced by `clms archaeology commit`, not by the orchestrator"
+                ]
+            },
+            "refusal_conditions": [
+                "debate=null on a keep:true row",
+                "keep:true with debate.judge.verdict != keep",
+                "count(keep:true) > --keep cap",
+                "version != 'archaeology/v2'",
+                "candidate_id collision with existing claim (idempotent skip, not error)"
+            ],
+            "filter_live_context": "--exclude-agent archaeology on context/timeline/suspect",
+            "v1_removed": "v1 git+mb auto-transcribe behavior removed. use `clms archaeology purge --session <stamp>` for cleanup."
         },
         "states": ["pending", "verified", "refuted", "unverifiable", "suspect"],
         "confidence_tiers": [
