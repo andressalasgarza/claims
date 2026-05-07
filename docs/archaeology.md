@@ -185,7 +185,8 @@ emits top-N. tie-break by source priority (table above, top to bottom).
       "suggested_evidence": [
         {"method": "code-test", "cmd": "cargo test test_append_only", "note": "advisory; not run by archaeology"}
       ],
-      "source_meta": {"file": "src/store.rs", "line": 142, "git_sha": "abc1234"},
+      "source_meta": {"file": "src/store.rs", "line": 142},
+      "created_at": "2024-08-12T19:31:04Z",
       "debate": null
     }
   ]
@@ -197,6 +198,26 @@ across re-harvests; debate transcripts re-attach to the same id on rerun.
 
 `suggested_evidence[].note` makes the advisory nature explicit. archaeology
 does not run these; they are hints for `clms verify` later.
+
+`debate: null` until phase 2 fills it in.
+
+### chronological ordering
+
+candidates are sorted **oldest first** by `created_at`. provenance:
+
+| surface | created_at source |
+|---|---|
+| in-source annotation | `git blame` author-time of the line where the marker appears |
+| proposals.json row | mtime of `.archaeology/proposals.json` |
+| uncommitted annotation | `null` (sorts to end) |
+| no git repo / unreadable | `null` (sorts to end) |
+
+rationale: claims earn their stake by surviving subsequent edits. an
+annotation that's lived through three years of refactors has demonstrated
+stake that yesterday's hasn't. when bounded-N truncates, oldest survives —
+that's the intentional FIFO bias.
+
+file:line is the tiebreak when timestamps are equal or both null.
 
 `debate: null` until phase 2 fills it in.
 
