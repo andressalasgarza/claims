@@ -214,48 +214,77 @@ enum Cmd {
     /// dump machine-readable schema (commands, evidence-method requirements, enums). for agent self-discovery.
     #[command(after_help = SCHEMA_HELP)]
     Schema,
-    /// reconstruct a shadow ledger from git + (optionally) mb history. cap at documented confidence.
-    #[command(after_help = ARCHAEOLOGY_HELP)]
-    Archaeology(ArchaeologyArgs),
+    /// archaeology v2: harvest stake-signal candidates, debate via pi-subagents, commit survivors. (v1 removed.)
+    #[command(after_help = ARCHAEOLOGY_HELP, subcommand_required = true, arg_required_else_help = true)]
+    Archaeology {
+        #[command(subcommand)]
+        sub: ArchaeologySub,
+    },
+}
+
+#[derive(clap::Subcommand)]
+enum ArchaeologySub {
+    /// harvest candidate claims from repo signals. emits candidates.json. NEVER writes claims.
+    Suggest(SuggestArgs),
+    /// ingest curated survivors.json. writes pending claims with archaeology_meta. requires debate.
+    Commit(CommitArgs),
+    /// remove archaeology claims by session (and optional agent). idempotent cleanup.
+    Purge(PurgeArgs),
 }
 
 #[derive(Args)]
-struct ArchaeologyArgs {
-    /// start from this sha (default: full history from root)
+struct SuggestArgs {
+    /// hard cap on candidates (default 10, ceiling 50)
+    #[arg(long, default_value_t = 10)]
+    max: usize,
+    /// signal kinds to enable. v2.0 ships only `clms-claim-annotation`. (repeatable)
     #[arg(long)]
-    since: Option<String>,
-    /// skip .marbles/marbles.csv even if present
-    #[arg(long = "no-mb")]
-    no_mb: bool,
-    /// print planned actions, do not write to .claims/
-    #[arg(long = "dry-run")]
-    dry_run: bool,
+    source: Vec<String>,
+    /// write candidates.json to this path (default: stdout)
+    #[arg(long, short = 'o')]
+    output: Option<std::path::PathBuf>,
+}
+
+#[derive(Args)]
+struct CommitArgs {
+    /// path to survivors.json from the debate phase
+    #[arg(long = "from-plan")]
+    from_plan: std::path::PathBuf,
+    /// cap on committed claims (default 8)
+    #[arg(long, default_value_t = 8)]
+    keep: usize,
+}
+
+#[derive(Args)]
+struct PurgeArgs {
+    /// session stamp to match (e.g. backfill-2026-05-06T22:50:14Z)
+    #[arg(long)]
+    session: String,
+    /// also restrict to this agent stamp (default: archaeology)
+    #[arg(long)]
+    agent: Option<String>,
 }
 
 const ARCHAEOLOGY_HELP: &str = r#"
 EXAMPLES
-  clms archaeology --dry-run                  # preview plan, no writes
-  clms --format ai archaeology --dry-run      # plan as json
-  clms archaeology --since v1.0.0             # only commits since tag/sha
-  clms archaeology --no-mb                    # ignore .marbles/ even if present
+  clms archaeology suggest                          # harvest candidates, print json to stdout
+  clms archaeology suggest --max 5 -o cand.json     # write to file, cap at 5
+  clms archaeology commit --from-plan survivors.json  # ingest curated survivors
+  clms archaeology purge --session backfill-<ts>    # remove a backfill session
 
-SCOPE
-  reconstructs a SHADOW ledger from existing repo signals. NOT equivalent
-  to having used clms from inception. confidence is capped at 'documented'
-  by construction — never empirical, never observed, never derived.
+v2 CONTRACT
+  archaeology is a CANDIDACY engine, not a verification engine.
+  - phase 1 (suggest): byte-walks source for `// clms-claim:` and `# clms-claim:`
+    annotations. bounded-N (default 10, ceiling 50). NEVER writes claims.
+  - phase 2 (debate): orchestrator-agnostic. pi-subagents reference impl uses the
+    `clms.judge` agent (.pi/agents/clms-judge.md). drop is structural default.
+  - phase 3 (commit): writes `state: pending` claims with archaeology_meta.
+    promotion to verified happens later via `clms verify`. always pending.
 
-SOURCES
-  git    universal, always on. one claim per commit, evidence quotes commit
-         msg subject. explicit `Revert \"...\"` commits emit refute edges.
-  mb     optional. auto-detected via .marbles/marbles.csv. one claim per
-         mb entry not already linked to a commit. blocked_by → --depends-on.
-         dedup with git happens via explicit m-XXXX reference in commit msg.
-
-STAMPING
-  every backfilled claim:
-    agent=archaeology  session=backfill-<rfc3339-ts>
-    git_sha=<historical>  created_at=<historical>
-  filter live agent context with: clms context --exclude-agent archaeology
+SEE ALSO
+  docs/archaeology.md      full design + signal taxonomy + protocol contract
+  clms verify              promote pending claims after archaeology commits them
+  clms context --exclude-agent archaeology   filter backfill from live ctx
 "#;
 
 const SCHEMA_HELP: &str = r#"
@@ -479,15 +508,24 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
         Cmd::HelpAll => cmd_help_all(),
         Cmd::Schema => cmd_schema(fmt),
-        Cmd::Archaeology(args) => archaeology::run(
-            &mut store,
-            archaeology::Args {
-                since: args.since,
-                no_mb: args.no_mb,
-                dry_run: args.dry_run,
-            },
-            fmt,
-        ),
+        Cmd::Archaeology { sub } => {
+            let s = match sub {
+                ArchaeologySub::Suggest(a) => archaeology::Sub::Suggest(archaeology::SuggestArgs {
+                    max: a.max,
+                    source: a.source,
+                    output: a.output,
+                }),
+                ArchaeologySub::Commit(a) => archaeology::Sub::Commit(archaeology::CommitArgs {
+                    from_plan: a.from_plan,
+                    keep: a.keep,
+                }),
+                ArchaeologySub::Purge(a) => archaeology::Sub::Purge(archaeology::PurgeArgs {
+                    session: a.session,
+                    agent: a.agent,
+                }),
+            };
+            archaeology::dispatch(s, fmt)
+        }
     }
 }
 
