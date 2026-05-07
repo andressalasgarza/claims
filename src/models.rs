@@ -154,6 +154,39 @@ pub struct Claim {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub content_hash: Option<String>,
+    /// archaeology v2 backfill metadata. only populated for claims born from
+    /// `clms archaeology commit`. additive, non-breaking — existing claim files
+    /// without this field deserialize to None and re-serialize without the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archaeology_meta: Option<ArchaeologyMeta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchaeologyMeta {
+    pub candidate_id: String,
+    pub kind: String,
+    pub stake_signal: StakeSignal,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_evidence: Vec<SuggestedEvidence>,
+    pub debate_transcript_ref: String,
+    pub judge_rationale: String,
+    pub judge_rank: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StakeSignal {
+    pub r#where: String,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestedEvidence {
+    pub method: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub r#ref: Option<String>,
+    pub note: String,
 }
 
 impl Claim {
