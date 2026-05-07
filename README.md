@@ -205,33 +205,55 @@ clms suspect            [--exclude-agent A]
 clms rerun <id> [--acknowledge-drift]
 clms diff-evidence <id>
 clms reindex
-clms archaeology [--since SHA] [--no-mb] [--dry-run]
+clms archaeology suggest [--max N] [--source K] [-o PATH]
+clms archaeology commit  --from-plan PATH [--keep K]
+clms archaeology purge   --session STAMP [--agent A]
 clms schema           # machine-readable schema (--format ai for json)
 clms help-all         # every subcommand's long help in one dump
 ```
 
-## archaeology (shadow-ledger backfill)
+## archaeology (v2)
 
-`clms archaeology` reconstructs a draft ledger from git history + (optionally)
-your `.marbles/marbles.csv`. it is an **audit tool**, not a time machine.
+`clms archaeology` is a **candidacy engine, not a verification engine.** it
+harvests claim-shaped signals from your codebase, runs them through an
+adversarial debate, and writes survivors as `state: pending` claims that
+you promote later via `clms verify`.
 
 full design: docs/archaeology.md. tl;dr:
 
-- one claim per commit, evidence quotes the commit subject
-- one claim per mb entry not already linked to a commit (linked via
-  explicit `m-XXXX` reference in the commit msg — no fuzzy matching)
-- `Revert "..."` commits emit refute edges to the original claim
-- mb `blocked_by` translates to `--depends-on` edges
-- every backfilled claim is stamped `agent=archaeology`, with the
-  *historical* commit sha and timestamp (not today's)
-- confidence is **capped at `documented`** by construction. archaeology
-  never emits empirical/observed/derived. re-running historical tests
-  against today's environment is dishonest, so it doesn't.
+- v2.0 ships ONE signal: `// clms-claim:` and `# clms-claim:` source
+  annotations. explicit intent encoding. zero false positives.
+- output is **bounded** at `--max=10` (ceiling 50). adding more sources
+  doesn't add slots, they compete for the existing ones.
+- archaeology **never auto-verifies.** every committed claim is `pending`
+  with `evidence: []`. promotion is `clms verify`'s job, not archaeology's.
+- debate phase is orchestrator-agnostic. pi-subagents reference impl uses
+  the `clms.judge` agent (`.pi/agents/clms-judge.md`) with drop-as-default.
+
+### usage
+
+```rust
+// clms-claim: ledger writes are append-only
+// clms-evidence: method=code-test cmd="cargo test test_append_only"
+fn append_to_ledger(...) { ... }
+```
+
+```bash
+# 1. harvest candidates
+clms archaeology suggest -o candidates.json
+
+# 2. orchestrate the debate (pi-subagents example)
+#    -> the clms.judge agent reads candidates.json, returns survivors.json
+#    -> see docs/archaeology.md "phase 2" for the chain invocation
+
+# 3. ingest survivors as pending claims
+clms archaeology commit --from-plan survivors.json --keep 8
+
+# 4. promote each pending claim to verified when you actually run the test
+clms verify <id> --method code-test --ref <path> --exit-code 0 --cmd "..."
+```
 
 ### filtering backfill from live context
-
-backfill lives in the same `.claims/` dir as real-time entries. distinguish
-via the agent stamp:
 
 ```bash
 clms context --exclude-agent archaeology   # only real-time claims
@@ -239,15 +261,30 @@ clms timeline --exclude-agent archaeology
 clms suspect  --exclude-agent archaeology
 ```
 
+### cleanup
+
+remove a backfill session entirely (e.g. aborted run, v1 spew):
+
+```bash
+clms archaeology purge --session backfill-<rfc3339-ts>
+```
+
 ### what archaeology cannot recover
 
 - claims that died as bad ideas before being committed (survivorship bias)
-- empirical-tier confidence (would require running historical tests against
-  rotted environments — we refuse)
-- semantic refutes ("this refactor proved an earlier assumption wrong")
-- merges across heterogeneous task trackers (no todoist, no jira, etc.)
+- empirical-tier confidence (we refuse to fake re-running historical tests)
+- stake itself — archaeology surfaces signals; the debate phase decides what
+  represents real stake worth tracking. that decision is irreducibly
+  intentional.
 
-these are surfaced in `clms archaeology --help`.
+### v1 removed
+
+the v1 git-and-mb-transcribe behavior is gone. it was a category error — it
+wrote one verified claim per commit and one per mb entry, drowning the
+ledger in unfalsifiable events. v1 sessions can be cleaned up with
+`clms archaeology purge --session <stamp>`.
+
+learn from our mistakes: docs/archaeology.md §"the lies v1 was telling."
 
 global flags: `--format default|human|ai`, `--dir <path>`.
 
