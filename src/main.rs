@@ -539,12 +539,27 @@ fn schema_value() -> serde_json::Value {
             "agent_stamp": "archaeology",
             "session_stamp_format": "backfill-<rfc3339-ts>",
             "phases": {
-                "1_harvest": "clms archaeology suggest. byte-walks source for // clms-claim: and # clms-claim:. bounded N (default 10, ceiling 50).",
+                "1_harvest": "clms archaeology suggest. reads two intent surfaces: in-source `// clms-claim:` annotations AND `.archaeology/proposals.json` (agent-written, optional). bounded N (default 10, ceiling 50).",
                 "2_debate": "orchestrator-agnostic. pi-subagents reference impl uses .pi/agents/clms-judge.md (clms.judge runtime). drop is default.",
                 "3_commit": "clms archaeology commit --from-plan <survivors.json>. validates schema, writes state=pending claims with archaeology_meta. transcripts at .archaeology/<session>/."
             },
+            "intent_surfaces": {
+                "human_in_source": {
+                    "location": "// clms-claim: ... or # clms-claim: ... in *.rs/.py/.ts/.go/...",
+                    "persistence": "durable, version-controlled"
+                },
+                "agent_manifest": {
+                    "location": ".archaeology/proposals.json",
+                    "persistence": "ephemeral, regenerable",
+                    "reference_agent": ".pi/agents/clms-proposer.md",
+                    "schema": {
+                        "version": "archaeology/v2",
+                        "proposals": [{"text": "required", "where": "required", "snippet": "optional", "suggested_evidence": "optional []"}]
+                    }
+                }
+            },
             "signals_v2": [
-                {"kind": "clms-claim-annotation", "shipped": true, "description": "// clms-claim: <text> or # clms-claim: <text> in source code"}
+                {"kind": "clms-claim-annotation", "shipped": true, "description": "// clms-claim: in source code OR row in .archaeology/proposals.json. one signal kind, two intent surfaces."}
             ],
             "signals_deferred": [
                 "test-name-invariant", "type-marked", "mb-verify-task",

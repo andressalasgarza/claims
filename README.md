@@ -221,8 +221,9 @@ you promote later via `clms verify`.
 
 full design: docs/archaeology.md. tl;dr:
 
-- v2.0 ships ONE signal: `// clms-claim:` and `# clms-claim:` source
-  annotations. explicit intent encoding. zero false positives.
+- v2.0 ships ONE signal kind (`clms-claim-annotation`) with TWO intent surfaces:
+  - **human**: `// clms-claim:` / `# clms-claim:` in source code
+  - **agent**: `.archaeology/proposals.json` (written by `.pi/agents/clms-proposer.md`)
 - output is **bounded** at `--max=10` (ceiling 50). adding more sources
   doesn't add slots, they compete for the existing ones.
 - archaeology **never auto-verifies.** every committed claim is `pending`
@@ -239,7 +240,11 @@ fn append_to_ledger(...) { ... }
 ```
 
 ```bash
-# 1. harvest candidates
+# 0. (cold-start, optional): proposer agent seeds .archaeology/proposals.json
+#    -> reads codebase, identifies invariants, writes ≤ 10 proposals
+#    -> NO chat review; the judge phase is the discrimination gate
+
+# 1. harvest candidates (reads source annotations + proposals.json if present)
 clms archaeology suggest -o candidates.json
 
 # 2. orchestrate the debate (pi-subagents example)
