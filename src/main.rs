@@ -524,7 +524,7 @@ fn run(cli: Cli) -> Result<()> {
                     agent: a.agent,
                 }),
             };
-            archaeology::dispatch(s, fmt)
+            archaeology::dispatch(s, &mut store, fmt)
         }
     }
 }
@@ -713,6 +713,7 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
         created_at: stamp_at,
         updated_at: stamp_at,
         content_hash: None,
+        archaeology_meta: None,
     };
     store.write_claim(&mut claim)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);
