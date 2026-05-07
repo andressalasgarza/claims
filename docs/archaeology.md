@@ -1,154 +1,397 @@
-# clms archaeology — design
+# clms archaeology — design (v2 final)
 
-shadow-ledger reconstruction from existing repo signals. NOT a time machine —
-an audit tool. produces a draft ledger of what was *implicitly believed* at each
-point, derived from artifacts that already exist (git, mb).
+> **status:** v2 supersedes v1. v1 design is at git ref `f48d235`; v1 impl
+> at `235bdf4`. v2 corrects two structural errors v1 carried forward
+> through the first v2 draft (auto-verification, role-biased debate).
 
-## scope (locked)
+## the lies v1 was telling
 
-- **git** is the universal source. always on.
-- **mb** is optional, auto-detected via `.marbles/marbles.csv`.
-- **no todoist, no jira, no plugin tier.** out of scope. users who want
-  external trackers write their own one-off scripts that emit `clms add` calls;
-  they are not first-class citizens in this binary.
+1. **transcribe-as-claim.** v1 emitted one claim per commit and one per mb
+   entry. result: ~30 of 35 outputs were noise. claims live in present tense
+   with stake; commits live in past tense as events. wrong category.
 
-## non-goals
+2. **enumeration without bound.** any source that scales output with
+   codebase/history size generates noise faster than curation absorbs it.
 
-- recovering claims that died as bad ideas before being committed (gone forever, survivorship bias is irreducible)
-- empirical-tier evidence (would require re-running historical tests against historical environments — too rotten to be honest)
-- semantic refute detection ("this refactor proved an earlier assumption wrong") — defer to v2
-- merging across heterogeneous task trackers — only git and mb
+3. **auto-verification.** v1 wrote `state: verified` claims with evidence
+   stamped from documentary signals it never ran. that's the same "we know
+   this was true" lie at any scale. v2-draft1 carried this forward; oracle
+   review caught it.
 
-## decisions
+v2 fixes all three by construction.
 
-### (a) backfill isolation: agent-filter convention
+## first principles
 
-backfilled claims live in the same `.claims/` dir as real-time entries.
-distinguished by `agent: "archaeology"` and `session: "backfill-<rfc3339-ts>"`.
+| principle | consequence |
+|---|---|
+| claim ≠ fact | enumeration sources score zero; intent-encoded signals score high |
+| stake is intentional | language with stake-encoding wins (must, always, never, invariant) |
+| **archaeology never verifies** | phase 3 always writes `state: pending`. promotion is `clms verify`'s job |
+| bounded output | hard cap, default `--max=10`, ceiling 50 |
+| drop is default | survival requires affirmative argument under token budget |
+| transcript over verdict | every debate decision logged for replay/override |
 
-filtering is provided by `--exclude-agent archaeology` on `context`, `timeline`,
-and `suspect` (delivered by m-f39f).
+archaeology is a **candidacy engine**, not a verification engine. that
+distinction is the whole game.
 
-**rejected alternatives:**
-- separate `.claims-draft/` dir → adds a second storage path, doubles `reindex`
-  complexity, and requires a "promote" workflow nobody asked for
-- reserved tag like `tag:archaeology` → tags are user-facing and shouldn't
-  encode meta-provenance; agent stamp is the right channel
-
-### (b) confidence cap: enforced by construction
-
-archaeology only ever emits evidence with method `documented` or `observed`.
-never `stat-test`, `code-test`, or `derived`. this is enforced by the type of
-the evidence builder in `archaeology::emit`, not by a runtime check that could
-be bypassed.
-
-reasoning: re-running historical tests against today's environment is
-dishonest. the ref hash you'd capture is today's hash of the historical file,
-not the hash at the supposed verify time. drift detection downstream gets
-permanently degraded. better to be transparent: "this is what the commit msg
-*said* was true, here's the quote, that's all we know."
-
-| source | method     | --ref           | --quote / payload          |
-|--------|------------|-----------------|----------------------------|
-| git    | documented | `git:<sha>`     | first line of commit msg   |
-| mb     | documented | `mb:<id>`       | task title                 |
-
-### (c) dedup: explicit id reference only
-
-two entries are merged into one claim only when there's a hard cross-reference:
-
-- commit message body contains literal `m-XXXX` → merge that commit's claim
-  with the corresponding mb entry's claim
-- otherwise: separate claims, even if text looks similar
-
-**no fuzzy text matching, no llm-based similarity scoring.** if it ain't an
-explicit id reference, it's two claims. the small redundancy cost is worth
-avoiding spurious merges, which would silently corrupt the ledger.
-
-### (d) refute detection: explicit reverts only
-
-a commit refutes the prior claim when:
-
-- commit message starts with `Revert "..."` (the standard `git revert` prefix), AND
-- the message includes the reverted sha (also standard)
-
-we look up that sha → find the corresponding archaeology claim → emit
-`refute --by <new_seq> --reason "<commit msg>" --cascade`.
-
-semantic refutes ("commit X proves earlier assumption Y wrong") are deferred.
-agents will fail to detect them reliably from diffs alone.
-
-## flags
+## the three phases
 
 ```
-clms archaeology [--since <sha>] [--no-mb] [--dry-run]
-
-  --since <sha>   start from this sha (default: first commit)
-  --no-mb         skip .marbles/marbles.csv even if present
-  --dry-run       print planned writes as json, do not touch .claims/
+phase 1   harvest    rust, in clms              ≤ N candidates
+phase 2   debate     orchestrator-agnostic       drop-is-default judge
+phase 3   commit     rust, in clms               survivors → pending claims
 ```
 
-global `--format ai` applies — under ai, both dry-run output and final report
-are single-line json arrays per claim.
+clms owns phases 1 and 3. clms does NOT orchestrate phase 2. it defines a
+JSON protocol both ends respect, and ships a reference implementation for
+[`pi-subagents`](https://www.npmjs.com/package/pi-subagents). any
+orchestrator that respects the protocol works equivalently.
 
-## stamping
+## phase 1 — harvest
 
-every backfilled claim gets:
+`clms archaeology suggest [--max N] [--source ...] > candidates.json`
+
+### signal taxonomy (in priority order)
+
+| kind | source | example signal | example claim |
+|---|---|---|---|
+| `clms-claim-annotation` | code-comment annotation | `// clms-claim: ledger is append-only` | "ledger is append-only" |
+| `test-name-invariant` | test fn names | `test_no_import_cycles` | "no import cycles exist in core/" |
+| `type-marked` | `Final`, `frozen`, `readonly` | `Final[List[str]]` | "X is immutable after init" |
+| `mb-verify-task` | mb tasks | "verify totals match counterparty" | "totals match counterparty within $0.01" |
+| `cm-structural` | cm queries (on demand only) | `cm cycles core/` | "no cycles exist in core/" |
+| `git-revert` | explicit reverts | `Revert "..."` | refute edge only, never new claim |
+
+`clms-claim-annotation` is the highest-density signal because it requires
+explicit intent to write. format:
+
+```rust
+// clms-claim: <one-sentence falsifiable assertion>
+// clms-evidence: <method=...> [cmd=...] [ref=...]
+fn append_to_ledger(...) { ... }
+```
+
+```python
+# clms-claim: this function is pure (no IO, no global state)
+def transform(record: Record) -> Record: ...
+```
+
+scanning for `// clms-claim:` and `# clms-claim:` is a deterministic, fast,
+zero-false-positive signal. it's also a quiet contract: agents writing code
+declare invariants inline; archaeology harvests them without prose-mining.
+
+### bounded-N rule
 
 ```
-agent:      "archaeology"
-session:    "backfill-<rfc3339-ts-of-archaeology-run>"
-git_sha:    <historical sha being archaeologized, NOT current HEAD>
-created_at: <historical commit timestamp, NOT now()>
-updated_at: <same as created_at on first write>
+default --max=10      hard cap
+absolute ceiling      50    (refuses larger; defeats the purpose)
 ```
 
-historical `git_sha` and `created_at` are unblocked by m-f39f. without those,
-every backfilled claim would lie about when and where it was made — which
-defeats the point of an audit tool.
+if extracted candidates exceed N, harvester ranks by signal strength and
+emits top-N. tie-break by source priority (table above, top to bottom).
 
-## flow
+### candidate schema
+
+```json
+{
+  "version": "archaeology/v2",
+  "generated_at": "2026-05-06T22:00:00Z",
+  "harvester": {
+    "max": 10,
+    "actual": 7,
+    "sources_enabled": ["clms-claim-annotation", "test-name-invariant", "mb-verify-task"]
+  },
+  "candidates": [
+    {
+      "id": "c-7f3a",
+      "kind": "clms-claim-annotation",
+      "text": "ledger writes are append-only",
+      "stake_signal": {
+        "where": "src/store.rs:142",
+        "snippet": "// clms-claim: ledger writes are append-only"
+      },
+      "suggested_evidence": [
+        {"method": "code-test", "cmd": "cargo test test_append_only", "note": "advisory; not run by archaeology"}
+      ],
+      "source_meta": {"file": "src/store.rs", "line": 142, "git_sha": "abc1234"},
+      "debate": null
+    }
+  ]
+}
+```
+
+`id` is `c-` + first 4 hex of `blake3(text + kind + stake_signal)`. stable
+across re-harvests; debate transcripts re-attach to the same id on rerun.
+
+`suggested_evidence[].note` makes the advisory nature explicit. archaeology
+does not run these; they are hints for `clms verify` later.
+
+`debate: null` until phase 2 fills it in.
+
+## phase 2 — debate
+
+one pass. one agent. drop is default.
 
 ```
-1. resolve --since (default to root commit)
-2. walk git log --reverse --since <sha> → list of commits
-3. if .marbles/ exists and !--no-mb: read marbles.csv → list of mb entries
-4. build a sha → mb_id index from commit msgs (regex /m-[0-9a-f]+/)
-5. for each commit:
-     a. if msg starts with `Revert "..."` and contains a reverted sha:
-          → look up reverted commit's archaeology claim
-          → enqueue refute action
-     b. else:
-          → enqueue add action with documented evidence
-6. for each mb entry not already linked to a commit:
-     → enqueue add action with documented evidence
-     → translate mb dep edges to --depends-on
-7. for each linked (commit, mb) pair:
-     → single add action, evidence references both
-8. if --dry-run: serialize plan and exit
-9. else: execute plan via store.write_claim, then verify_claim with
-   the documented evidence, in chronological order so refute targets
-   exist by the time refutes are processed
+input    candidates.json + K cap (max survivors, from --keep flag)
+agent    clms.judge   (pi-subagents reference impl; or any orchestrator)
+budget   ~600 tokens for N=10 candidates
+output   survivors.json with debate.judge populated and keep:bool per row
+```
+
+### why one pass, not three
+
+draft 1 of v2 had three passes (advocate-per-claim → prosecutor → judge).
+oracle review caught the structural problems:
+
+- "advocate" role is sycophantic regardless of prompt; naming biases
+  behavior. "drop is default" doesn't override "you are the defender."
+- 3 stochastic hops compound randomness without adding signal.
+- at bounded-N=10, parallel advocacy doesn't buy wall-clock; one judge
+  reads all candidates in one context window comfortably.
+- cross-comparison (catching subsumption) is a *feature* of stake-judgment,
+  and per-claim parallel advocacy actively prevents it.
+
+single drop-by-default judge captures the same adversarial pressure with
+~20% the tokens, half the stochastic surface, and no role-bias.
+
+### the canonical chain (pi-subagents reference)
+
+```typescript
+subagent({
+  agent: "clms.judge",
+  task: `
+    K=8 cap on survivors. Drop is default.
+    Read candidates.json from {chain_dir}/candidates.json.
+    Write survivors.json to {chain_dir}/survivors.json.
+  `,
+  reads: ["candidates.json"],
+  output: "survivors.json",
+  context: "fresh"
+})
+```
+
+### the agent file (.pi/agents/clms-judge.md)
+
+shipped at project scope from the clms repo so any consumer that clones it
+gets the agent auto-discovered.
+
+```markdown
+---
+name: clms-judge
+package: clms
+description: drop-by-default cut and ranking of archaeology candidates
+inheritProjectContext: false
+inheritSkills: false
+tools: read
+---
+
+clms is an append-only ledger of falsifiable claims with stake. archaeology
+backfills candidate claims from existing repo signals. claims that don't
+represent monitorable invariants pollute the ledger and dilute every future
+`clms context` call. your job: be the gate that prevents that.
+
+You receive a candidates.json with N proposed claims, each with stake-signal
+evidence and source metadata. You also receive a K cap (max survivors).
+
+Default verdict for every candidate: DROP. Survival requires you to
+articulate, in ≤80 tokens per survivor:
+
+1. who has stake in this claim being true (downstream users? CI? finance?
+   security? if "no one specific," vote drop)
+2. what would change in their behavior if the claim flipped to false
+3. why this is monitorable as an *invariant*, not a one-time fact
+
+If you find yourself arguing "this seems true and falsifiable," that is NOT
+sufficient. Many true falsifiable facts are not claims. Stake is the test.
+
+Cross-compare across all candidates. If two are subsumed by one, keep the
+parent and drop the children. If a candidate is better-tracked elsewhere
+(type system, CI assertion, lint rule), drop it.
+
+Total budget: ~600 tokens for N=10. If your budget binds before you've
+covered every candidate, remaining defaults to drop.
+
+Output (single-line JSON, written to survivors.json):
+{
+  "version": "archaeology/v2",
+  "judge": {
+    "survivors": [{"id":"c-XXXX","rank":N,"rationale":"..."}],
+    "cuts": {"c-YYYY":"<≤30 token reason>"},
+    "tokens_used": N
+  },
+  "candidates": [<original candidates with debate.judge filled and keep:bool>]
+}
+
+Hard rules:
+- never exceed K survivors
+- never invent new candidates
+- never propose new evidence (use the candidate's suggested_evidence as-is)
+- never argue for upgrading anything; commit always writes pending
+- if every candidate fails the stake test, output zero survivors. that is
+  a valid outcome — it means the harvest was noise and the user should
+  tighten signal rules or accept that this repo has no archaeology yield
+```
+
+### the protocol contract (orchestrator-agnostic)
+
+any orchestrator that wants to substitute for pi-subagents must respect:
+
+1. **input:** read `candidates.json` matching the schema above.
+2. **output:** write `survivors.json` containing the original candidates,
+   with each row's `debate` field populated (`{"judge": {...}}`) and a
+   `keep: bool` per row.
+3. **drop is structural.** `keep: true` requires affirmative justification
+   in the row's `debate.judge.rationale`. orchestrators must not default to
+   keep.
+4. **K is post-hoc enforced.** `clms archaeology commit` rejects survivor
+   files where `count(keep:true) > K`. orchestrator failure to respect K
+   is caught by clms, not assumed.
+
+with these four invariants, a hand-written python driver, a different
+agent runtime, or a human curator opening candidates.json in vim are all
+first-class.
+
+## phase 3 — commit
+
+`clms archaeology commit --from-plan survivors.json [--keep K]`
+
+reads the file, validates, writes each `keep: true` row as a **pending**
+claim with `archaeology_meta` populated.
+
+### invariants (refusal conditions)
+
+clms refuses to commit if:
+
+- `debate` is null on any `keep: true` row (no debate happened — there is
+  no `--allow-no-debate` flag; manual users go through `clms add`)
+- `keep: true` but `debate.judge.verdict` not present
+- `count(keep:true) > K`
+- candidate `id` collides with existing `archaeology_meta.candidate_id` in
+  storage (re-runs are idempotent; same id → skip with log line)
+
+### claim shape on disk
+
+```json
+{
+  "schema_version": "...",
+  "agent": "archaeology",
+  "session": "backfill-<rfc3339-ts>",
+  "text": "ledger writes are append-only",
+  "state": "pending",
+  "evidence": [],
+  "archaeology_meta": {
+    "candidate_id": "c-7f3a",
+    "kind": "clms-claim-annotation",
+    "stake_signal": {"where": "src/store.rs:142", "snippet": "..."},
+    "suggested_evidence": [
+      {"method": "code-test", "cmd": "cargo test test_append_only"}
+    ],
+    "debate_transcript_ref": ".archaeology/<session>/c-7f3a.json",
+    "judge_rationale": "<survivor rationale from debate>",
+    "judge_rank": 4
+  }
+}
+```
+
+`archaeology_meta` is a new optional field on `Claim`. additive, non-breaking.
+
+`evidence: []` on first write. promotion happens through normal
+`clms verify <id> --method ... --ref ...`. the suggested_evidence is a
+hint, not a write.
+
+debate transcripts archive at **`.archaeology/<session>/<candidate-id>.json`**
+at repo root (NOT inside `.claims/`, to avoid reindex-glob footguns).
+
+## flags (final)
+
+```
+clms archaeology suggest [opts]
+  --max N                hard cap on candidates (default 10, ceiling 50)
+  --source <kind>        repeatable; defaults to all signal kinds except cm
+  --cm-queries <list>    comma-separated cm queries (only with --source cm)
+  --output <path>        candidates.json path (default stdout)
+
+clms archaeology commit --from-plan <path>
+  --keep N               cap on committed claims (default 8)
+
+clms archaeology purge --session <stamp> [--agent <a>]
+  cleanup utility for v1 spew or aborted runs.
+  matches on agent + session, removes claim files, regenerates index.
+
+REMOVED in v2 (errors out with migration hint):
+clms archaeology                       (v1 auto-write)
+clms archaeology --dry-run             (use `suggest` instead)
+clms archaeology --no-mb               (use `--source` selection instead)
+clms archaeology --since <sha>         (filter at harvest time, not v1's
+                                        whole-history transcribe)
+```
+
+removed commands print:
+
+```
+{"error":"archaeology v1 removed. use `clms archaeology suggest` then `clms archaeology commit --from-plan`. see docs/archaeology.md","kind":"deprecated","code":1,"migration":"clms archaeology purge --session <v1-session> for cleanup"}
+```
+
+## migration from v1
+
+```bash
+# 1. find v1 sessions
+clms --format ai context | jq -r '.[] | select(.agent=="archaeology") | .session' | sort -u
+
+# 2. purge each
+clms archaeology purge --session backfill-<v1-ts>
+
+# 3. re-run with v2
+clms archaeology suggest --max 10 > candidates.json
+# orchestrate debate (pi-subagents recipe above)
+clms archaeology commit --from-plan survivors.json --keep 8
+
+# 4. claims land as pending. verify when ready:
+clms verify <id> --method code-test --cmd "<suggested_evidence cmd>" ...
 ```
 
 ## test plan
 
-minimum viable smoke tests (no formal test suite exists yet, hand-test):
+- empty repo → 0 candidates, exit 0, message "no stake signals found"
+- repo with 5 commits, no annotations, no tests → **0 candidates** (correct!
+  commits alone are not signals in v2)
+- repo with 3 `// clms-claim:` annotations → 3 candidates
+- repo with 50 `// clms-claim:` annotations → exactly 10 candidates, ranked
+- judge returns 0 survivors → commit succeeds, writes 0 claims, exit 0
+- commit with `keep:true` row missing `debate.judge` → exits 1
+- commit with `count(keep:true)=12, --keep 8` → exits 1
+- re-running suggest+commit with same survivors.json → idempotent (skips on id collision)
+- purge `--session <s>` removes only matching claims, leaves others intact
+- dogfood on the clms repo: add 5 `// clms-claim:` annotations to src/, expect
+  ≤5 candidates, run debate, expect ≤K survivors, all claim-shaped
 
-- empty repo (only initial commit) → 1 claim emitted
-- repo with 5 commits, no reverts → 5 claims, no refutes
-- repo with explicit `git revert <sha>` → 2 claims, 1 refute edge
-- repo with mb integration → claims merged on m-XXXX cross-ref
-- `--dry-run` writes nothing to .claims/
-- `--exclude-agent archaeology` on context/timeline/suspect hides all output
-- run on the claims repo itself (dogfood) → produces a sane shadow ledger
+## v3 deferred
+
+- **readme-assertion** — prose-mining for "always X", "guarantees Y", etc.
+  excluded from v2 because regex-on-marketing-copy is a noise generator
+  (oracle's call). reconsider after dogfood data shows whether `clms-claim`
+  annotation is sufficient.
+- **docstring-invariant** — same rationale; defer.
+- **clms archaeology refresh** — re-harvest, identify previously-committed
+  claims whose source signal disappeared (test deleted, annotation removed).
+  flags drift candidates for review.
+- **multi-language `clms-claim:` extraction** — v2 ships rust+python comment
+  syntaxes. add javascript/typescript/go variants based on demand.
 
 ## what this tool is honest about
 
-- it cannot reconstruct what an agent *would have said* under real-time clms discipline (the "write falsifiable claim before knowing the answer" thing)
-- it cannot confer empirical confidence retroactively, ever
-- it cannot dedup across sources without explicit id refs, by design
-- it produces a *plausible* shadow trail, not the *actual* epistemic trail
-
-these constraints are surfaced in `clms archaeology --help` and the README so
-users don't mistake the output for ground truth.
+- archaeology never produces verified claims. it produces *candidates* that
+  survive an adversarial cut. promotion is the user's job via `clms verify`.
+- the harvester is rule-based and intent-driven — it harvests what the
+  codebase explicitly declares (`// clms-claim:`, test names, type marks),
+  not what an llm guesses might be implicit.
+- the debate is opt-in (the user runs the orchestrator) and overridable
+  (transcripts are stored, judge rationales editable in survivors.json
+  before commit).
+- bounded-N is a feature, not a limitation. if the cap binds, the right
+  move is tightening signals or adding `clms-claim` annotations to the
+  codebase, NOT raising N.
+- archaeology produces zero candidates on most fresh repos. that is correct.
+  empty output is not a failure mode; it's a correct read of "no
+  archaeology yield available here."
