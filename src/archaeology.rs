@@ -74,9 +74,7 @@ pub fn dispatch(sub: Sub, store: &mut Store, fmt: OutputFormat) -> Result<()> {
     match sub {
         Sub::Suggest(a) => cmd_suggest(a, fmt),
         Sub::Commit(a) => cmd_commit(store, a, fmt),
-        Sub::Purge(_) => bail!(
-            "archaeology purge not yet implemented in this build (m-2313)."
-        ),
+        Sub::Purge(a) => cmd_purge(store, a, fmt),
     }
 }
 
@@ -591,6 +589,63 @@ fn build_pending_claim(
 
 fn claim_mut(c: Claim) -> Claim {
     c
+}
+
+// ---------- purge ----------
+
+fn cmd_purge(store: &mut Store, args: PurgeArgs, fmt: OutputFormat) -> Result<()> {
+    let target_agent = args.agent.unwrap_or_else(|| AGENT.to_string());
+    let target_session = args.session;
+
+    let mut victims: Vec<u64> = Vec::new();
+    for seq in store.all_seqs()? {
+        let claim = match store.read_claim(seq) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let agent_match = claim.agent.as_deref() == Some(target_agent.as_str());
+        let session_match = claim.session.as_deref() == Some(target_session.as_str());
+        if agent_match && session_match {
+            victims.push(seq);
+        }
+    }
+
+    let mut removed = 0usize;
+    for seq in &victims {
+        let path = PathBuf::from(".claims").join(format!("{:06}.json", seq));
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("remove {}", path.display()))?;
+            removed += 1;
+        }
+    }
+
+    let reindexed = store.reindex_all()?;
+
+    if matches!(fmt, OutputFormat::Ai) {
+        println!(
+            "{}",
+            serde_json::json!({
+                "agent": target_agent,
+                "session": target_session,
+                "matched_seqs": victims,
+                "removed_files": removed,
+                "reindexed_total": reindexed,
+            })
+        );
+    } else if victims.is_empty() {
+        println!(
+            "no claims matched agent={} session={}",
+            target_agent, target_session
+        );
+    } else {
+        println!(
+            "purged {} claims (seqs: {:?}) for agent={} session={}",
+            removed, victims, target_agent, target_session
+        );
+        println!("reindexed {} remaining claims", reindexed);
+    }
+    Ok(())
 }
 
 #[allow(dead_code)]
