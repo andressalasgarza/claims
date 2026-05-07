@@ -14,6 +14,7 @@ use crate::models::{
     ArchaeologyMeta, Claim, StakeSignal as ModelStakeSignal,
     SuggestedEvidence as ModelSuggestedEvidence, State, SCHEMA_VERSION as CLAIM_SCHEMA_VERSION,
 };
+use crate::git;
 use crate::output::OutputFormat;
 use crate::store::Store;
 use anyhow::{anyhow, bail, Context, Result};
@@ -91,6 +92,13 @@ pub struct Candidate {
     pub stake_signal: StakeSignal,
     pub suggested_evidence: Vec<SuggestedEvidence>,
     pub source_meta: SourceMeta,
+    /// chronological provenance. `git blame` author-time for in-source
+    /// annotations; manifest mtime for proposals; None if neither resolves
+    /// (uncommitted line, missing repo, etc.). harvester sorts by this
+    /// ascending so older claims come first — they've earned their stake
+    /// by surviving subsequent edits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     pub debate: Option<serde_json::Value>,
 }
 
@@ -134,9 +142,21 @@ fn cmd_suggest(args: SuggestArgs, fmt: OutputFormat) -> Result<()> {
     // if both encode the same kind|text|where; keep first occurrence)
     let mut seen: HashSet<String> = HashSet::new();
     all.retain(|c| seen.insert(c.id.clone()));
+    // chronological ordering: oldest first. claims earn their stake by
+    // surviving subsequent edits; an annotation that's lived through three
+    // years of refactors has demonstrated stake that yesterday's hasn't.
+    // candidates without a resolvable timestamp (uncommitted, missing repo)
+    // sort to the end as "effectively newest." file:line is the tiebreak.
     all.sort_by(|a, b| {
-        (&a.source_meta.file, a.source_meta.line)
-            .cmp(&(&b.source_meta.file, b.source_meta.line))
+        match (&a.created_at, &b.created_at) {
+            (Some(x), Some(y)) => x
+                .cmp(y)
+                .then_with(|| (&a.source_meta.file, a.source_meta.line).cmp(&(&b.source_meta.file, b.source_meta.line))),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => (&a.source_meta.file, a.source_meta.line)
+                .cmp(&(&b.source_meta.file, b.source_meta.line)),
+        }
     });
     let actual = all.len();
     let truncated = if all.len() > max { all.len() - max } else { 0 };
@@ -257,6 +277,7 @@ fn harvest_proposals(root: &Path) -> Result<Vec<Candidate>> {
         .ok_or_else(|| anyhow!("{}: 'proposals' must be an array", path.display()))?;
 
     let manifest_rel = ".archaeology/proposals.json";
+    let manifest_mtime = git::file_mtime(&path);
     let mut out = Vec::new();
     for (idx, row) in arr.iter().enumerate() {
         let text = row["text"]
@@ -294,6 +315,9 @@ fn harvest_proposals(root: &Path) -> Result<Vec<Candidate>> {
             }
         }
         let id = candidate_id("clms-claim-annotation", &text, &where_str);
+        // proposals don't live in git history; date them by manifest mtime
+        // (filled once per call below). this puts agent proposals on a
+        // comparable timeline as source-blame timestamps.
         out.push(Candidate {
             id,
             kind: "clms-claim-annotation".into(),
@@ -307,6 +331,7 @@ fn harvest_proposals(root: &Path) -> Result<Vec<Candidate>> {
                 file: manifest_rel.to_string(),
                 line: (idx as u32) + 1,
             },
+            created_at: manifest_mtime,
             debate: None,
         });
     }
@@ -364,6 +389,7 @@ fn scan_file(path: &Path, root: &Path, content: &str, out: &mut Vec<Candidate>) 
             }
 
             let id = candidate_id("clms-claim-annotation", &claim_text, &where_str);
+            let created_at = git::blame_line_time(path, (idx as u32) + 1);
             out.push(Candidate {
                 id,
                 kind: "clms-claim-annotation".into(),
@@ -377,6 +403,7 @@ fn scan_file(path: &Path, root: &Path, content: &str, out: &mut Vec<Candidate>) 
                     file: rel.clone(),
                     line: (idx as u32) + 1,
                 },
+                created_at,
                 debate: None,
             });
             // marker variable preserves which prefix matched if useful later
