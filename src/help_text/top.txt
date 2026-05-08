@@ -1,0 +1,51 @@
+
+QUICKSTART
+  clms add "polymarket lags binance ~300ms" --tag market:btc
+  clms verify 1 --method stat-test --ref ./test.py --cmd "python3 ./test.py" \
+               --p-value 0.003 --sample-size 4821 --test-type ks --data-source real
+  clms add "we can arb this lag" --depends-on 1
+  clms refute 1 --by 3 --reason "lookahead bias" --cascade
+  clms timeline
+  clms context --format ai             # for stuffing into agent context
+
+STATES
+  pending      logged, no evidence yet
+  verified     evidence attached, passed validation
+  refuted      proven wrong, points to replacement claim
+  unverifiable explicitly cannot be tested (subjective, future-dependent)
+  suspect      a claim it depended on was refuted; needs re-verification
+
+CONFIDENCE TIERS (auto-derived from evidence method)
+  empirical    prop-test | integration-test | replay-test | stat-test  (strongest)
+  observed     observed (captured runtime artifact)
+  documented   official primary source + exact quote
+  derived      inference from >= 2 other claims
+
+FALSIFIABILITY (the design contract)
+  every method's evidence must come from a source the author does not
+  fully control. unit-test and sim-test are REFUSED at parse time:
+    - unit tests are confirmatory by construction (you pick input AND output)
+    - sim-tests on synthetic data only prove your simulator behaves like
+      your simulator (circular w/ the assumptions you're testing)
+  if you cannot find a real falsification surface, the claim does not
+  belong in this ledger.
+
+FOR AGENTS
+  always run with --format ai for json output. set CLAIMS_AGENT and
+  CLAIMS_SESSION env vars so every write is auto-stamped. before adding a
+  claim, run `clms context --format ai` to load known truth, then list
+  every existing claim that must hold for yours via --depends-on.
+
+  agent self-discovery (run once, cache the result):
+    clms --format ai schema     # full requirement matrix + enums + envelopes
+    clms help-all               # every subcommand's long help in one shot
+
+  under --format ai, errors emit a single-line json envelope on stderr:
+    {"error":"...","kind":"clap|runtime","code":1|2,...}
+  exit 2 = bad args (clap), exit 1 = runtime (validation, drift, not found).
+
+  archaeology v2 (candidacy engine, never verifies):
+    clms archaeology suggest -o candidates.json     # phase 1: harvest
+    # then debate via pi-subagents .pi/agents/clms-judge.md → survivors.json
+    clms archaeology commit --from-plan survivors.json   # phase 3: pending
+    clms context --exclude-agent archaeology             # filter from ctx

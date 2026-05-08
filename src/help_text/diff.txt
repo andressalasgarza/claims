@@ -1,0 +1,10 @@
+
+EXAMPLES
+  clms diff-evidence 1
+  clms --format ai diff-evidence 1   # full json for agent inspection
+
+NOTES
+  shows every evidence entry on a claim chronologically with hashes,
+  p-values, exit codes, and notes. useful for spotting silent drift
+  (file hashes that changed between runs) and tracking how a claim's
+  support has evolved over multiple verify/rerun cycles.

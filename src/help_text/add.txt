@@ -1,0 +1,12 @@
+
+EXAMPLES
+  clms add "polymarket api rate limit is 60/min" --tag infra
+  clms add "we can arb this lag" --depends-on 1 --depends-on 3 --tag strategy
+  clms add "mm bots withdraw at >50k size" --unverifiable --tag market
+
+NOTES
+  - --depends-on registers prerequisite claims. if any is later refuted with
+    --cascade, this claim auto-flips to suspect.
+  - --unverifiable is for claims you genuinely cannot test (subjective,
+    future-dependent). honesty bucket. otherwise the claim starts pending.
+  - claim text should be falsifiable. "x lags y by ~300ms" not "latency is bad".

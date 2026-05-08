@@ -1,0 +1,13 @@
+
+EXAMPLES
+  clms refute 1 --by 7 --reason "lookahead bias in original test"
+  clms refute 1 --by 7 --reason "..." --cascade   # auto-suspect dependents
+
+NOTES
+  - <id> = claim being refuted. --by <id> = the claim that supersedes it.
+  - the replacement claim must already exist. typical workflow: write the
+    new claim first with `clms add ...`, verify it, THEN refute the old one.
+  - --cascade walks the depends_on graph and flags every transitive
+    dependent of <id> as suspect. without --cascade you get a warning
+    listing them but no auto-flag. use --cascade unless you have a reason
+    not to.

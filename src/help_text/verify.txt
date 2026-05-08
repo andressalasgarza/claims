@@ -1,0 +1,66 @@
+
+EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
+  prop-test         --ref --exit-code --cmd
+  integration-test  --ref --exit-code --cmd --target <url-or-host>
+  replay-test       --ref --exit-code --cmd --dataset <path>
+  stat-test         --ref --p-value --sample-size --test-type --data-source <real|live>
+                                                          [--cmd recommended]
+  observed          --ref
+  documented        --ref --quote "<exact text from doc>"
+  derived           --from <id> --from <id>          (min 2)
+
+REFUSED METHODS (parse-time error)
+  unit-test  confirmatory only. you picked the input AND the expected output;
+             the test cannot disagree with you. use prop-test for randomized
+             input exploration, integration-test for real systems, replay-test
+             for real captured data, or observed for a single artifact.
+  code-test  removed in schema 1.1. ambiguous about falsification surface.
+             pick one of: prop-test | integration-test | replay-test.
+  sim-test   synthetic data is circular w/ the assumptions you're testing.
+             use stat-test --data-source=real, or file as derived citing the
+             simulator's underlying claims.
+
+EXAMPLES
+  # property-based test (randomized input generator)
+  clms verify 1 --method prop-test --ref ./tests/sort_props.rs --exit-code 0 \
+    --cmd "cargo test --release sort_props -- --nocapture"
+
+  # integration test against a real external system
+  clms verify 2 --method integration-test --ref ./tests/poly_api.py --exit-code 0 \
+    --target https://clob.polymarket.com \
+    --cmd "python3 ./tests/poly_api.py"
+
+  # replay test against frozen real-world capture
+  clms verify 3 --method replay-test --ref ./strategies/mm_v3.py --exit-code 0 \
+    --dataset ./data/binance_btc_l2_2024-03.parquet \
+    --cmd "python3 ./strategies/mm_v3.py --replay ./data/binance_btc_l2_2024-03.parquet"
+
+  # statistical test on real samples
+  clms verify 4 --method stat-test --ref ./test.py \
+    --test-type ks --p-value 0.003 --sample-size 4821 --data-source real \
+    --cmd "python3 ./test.py"
+
+  # documented source
+  clms verify 5 --method documented --ref https://docs.poly.com/api/limits \
+    --quote "default rate limit is 100 requests per minute"
+
+FALSIFICATION SURFACES
+  prop-test         randomized input generator finds counterexamples
+  integration-test  the real external system at --target can disagree
+  replay-test       frozen real-world data at --dataset can disagree
+  stat-test         real/live samples can fail to reject the null
+  observed          the artifact can be missing or contradictory
+  documented        the quote can be missing, edited, or contradicted
+  derived           upstream claims can be refuted (cascade)
+
+DRIFT
+  if --ref's file content has changed since a prior evidence entry on this
+  same claim, verify will refuse with exit 1 and show both hashes. add
+  --acknowledge-drift if the iteration is intentional. if the new result
+  contradicts the prior conclusion, you should refute the claim and write a
+  new one instead of acknowledging drift. the same drift logic applies to
+  --dataset on replay-test.
+
+CONFIDENCE
+  auto-derived from method. cannot be set manually. add stronger evidence
+  later (e.g. stat-test on top of documented) to bump confidence tier.

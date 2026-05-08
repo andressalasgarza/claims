@@ -17,58 +17,7 @@ use store::{
 };
 use ulid::Ulid;
 
-const TOP_HELP: &str = r#"
-QUICKSTART
-  clms add "polymarket lags binance ~300ms" --tag market:btc
-  clms verify 1 --method stat-test --ref ./test.py --cmd "python3 ./test.py" \
-               --p-value 0.003 --sample-size 4821 --test-type ks --data-source real
-  clms add "we can arb this lag" --depends-on 1
-  clms refute 1 --by 3 --reason "lookahead bias" --cascade
-  clms timeline
-  clms context --format ai             # for stuffing into agent context
-
-STATES
-  pending      logged, no evidence yet
-  verified     evidence attached, passed validation
-  refuted      proven wrong, points to replacement claim
-  unverifiable explicitly cannot be tested (subjective, future-dependent)
-  suspect      a claim it depended on was refuted; needs re-verification
-
-CONFIDENCE TIERS (auto-derived from evidence method)
-  empirical    prop-test | integration-test | replay-test | stat-test  (strongest)
-  observed     observed (captured runtime artifact)
-  documented   official primary source + exact quote
-  derived      inference from >= 2 other claims
-
-FALSIFIABILITY (the design contract)
-  every method's evidence must come from a source the author does not
-  fully control. unit-test and sim-test are REFUSED at parse time:
-    - unit tests are confirmatory by construction (you pick input AND output)
-    - sim-tests on synthetic data only prove your simulator behaves like
-      your simulator (circular w/ the assumptions you're testing)
-  if you cannot find a real falsification surface, the claim does not
-  belong in this ledger.
-
-FOR AGENTS
-  always run with --format ai for json output. set CLAIMS_AGENT and
-  CLAIMS_SESSION env vars so every write is auto-stamped. before adding a
-  claim, run `clms context --format ai` to load known truth, then list
-  every existing claim that must hold for yours via --depends-on.
-
-  agent self-discovery (run once, cache the result):
-    clms --format ai schema     # full requirement matrix + enums + envelopes
-    clms help-all               # every subcommand's long help in one shot
-
-  under --format ai, errors emit a single-line json envelope on stderr:
-    {"error":"...","kind":"clap|runtime","code":1|2,...}
-  exit 2 = bad args (clap), exit 1 = runtime (validation, drift, not found).
-
-  archaeology v2 (candidacy engine, never verifies):
-    clms archaeology suggest -o candidates.json     # phase 1: harvest
-    # then debate via pi-subagents .pi/agents/clms-judge.md → survivors.json
-    clms archaeology commit --from-plan survivors.json   # phase 3: pending
-    clms context --exclude-agent archaeology             # filter from ctx
-"#;
+const TOP_HELP: &str = include_str!("help_text/top.txt");
 
 #[derive(Parser)]
 #[command(
@@ -88,132 +37,15 @@ struct Cli {
     cmd: Cmd,
 }
 
-const ADD_HELP: &str = r#"
-EXAMPLES
-  clms add "polymarket api rate limit is 60/min" --tag infra
-  clms add "we can arb this lag" --depends-on 1 --depends-on 3 --tag strategy
-  clms add "mm bots withdraw at >50k size" --unverifiable --tag market
+const ADD_HELP: &str = include_str!("help_text/add.txt");
 
-NOTES
-  - --depends-on registers prerequisite claims. if any is later refuted with
-    --cascade, this claim auto-flips to suspect.
-  - --unverifiable is for claims you genuinely cannot test (subjective,
-    future-dependent). honesty bucket. otherwise the claim starts pending.
-  - claim text should be falsifiable. "x lags y by ~300ms" not "latency is bad".
-"#;
+const VERIFY_HELP: &str = include_str!("help_text/verify.txt");
 
-const VERIFY_HELP: &str = r#"
-EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
-  prop-test         --ref --exit-code --cmd
-  integration-test  --ref --exit-code --cmd --target <url-or-host>
-  replay-test       --ref --exit-code --cmd --dataset <path>
-  stat-test         --ref --p-value --sample-size --test-type --data-source <real|live>
-                                                          [--cmd recommended]
-  observed          --ref
-  documented        --ref --quote "<exact text from doc>"
-  derived           --from <id> --from <id>          (min 2)
+const REFUTE_HELP: &str = include_str!("help_text/refute.txt");
 
-REFUSED METHODS (parse-time error)
-  unit-test  confirmatory only. you picked the input AND the expected output;
-             the test cannot disagree with you. use prop-test for randomized
-             input exploration, integration-test for real systems, replay-test
-             for real captured data, or observed for a single artifact.
-  code-test  removed in schema 1.1. ambiguous about falsification surface.
-             pick one of: prop-test | integration-test | replay-test.
-  sim-test   synthetic data is circular w/ the assumptions you're testing.
-             use stat-test --data-source=real, or file as derived citing the
-             simulator's underlying claims.
+const RERUN_HELP: &str = include_str!("help_text/rerun.txt");
 
-EXAMPLES
-  # property-based test (randomized input generator)
-  clms verify 1 --method prop-test --ref ./tests/sort_props.rs --exit-code 0 \
-    --cmd "cargo test --release sort_props -- --nocapture"
-
-  # integration test against a real external system
-  clms verify 2 --method integration-test --ref ./tests/poly_api.py --exit-code 0 \
-    --target https://clob.polymarket.com \
-    --cmd "python3 ./tests/poly_api.py"
-
-  # replay test against frozen real-world capture
-  clms verify 3 --method replay-test --ref ./strategies/mm_v3.py --exit-code 0 \
-    --dataset ./data/binance_btc_l2_2024-03.parquet \
-    --cmd "python3 ./strategies/mm_v3.py --replay ./data/binance_btc_l2_2024-03.parquet"
-
-  # statistical test on real samples
-  clms verify 4 --method stat-test --ref ./test.py \
-    --test-type ks --p-value 0.003 --sample-size 4821 --data-source real \
-    --cmd "python3 ./test.py"
-
-  # documented source
-  clms verify 5 --method documented --ref https://docs.poly.com/api/limits \
-    --quote "default rate limit is 100 requests per minute"
-
-FALSIFICATION SURFACES
-  prop-test         randomized input generator finds counterexamples
-  integration-test  the real external system at --target can disagree
-  replay-test       frozen real-world data at --dataset can disagree
-  stat-test         real/live samples can fail to reject the null
-  observed          the artifact can be missing or contradictory
-  documented        the quote can be missing, edited, or contradicted
-  derived           upstream claims can be refuted (cascade)
-
-DRIFT
-  if --ref's file content has changed since a prior evidence entry on this
-  same claim, verify will refuse with exit 1 and show both hashes. add
-  --acknowledge-drift if the iteration is intentional. if the new result
-  contradicts the prior conclusion, you should refute the claim and write a
-  new one instead of acknowledging drift. the same drift logic applies to
-  --dataset on replay-test.
-
-CONFIDENCE
-  auto-derived from method. cannot be set manually. add stronger evidence
-  later (e.g. stat-test on top of documented) to bump confidence tier.
-"#;
-
-const REFUTE_HELP: &str = r#"
-EXAMPLES
-  clms refute 1 --by 7 --reason "lookahead bias in original test"
-  clms refute 1 --by 7 --reason "..." --cascade   # auto-suspect dependents
-
-NOTES
-  - <id> = claim being refuted. --by <id> = the claim that supersedes it.
-  - the replacement claim must already exist. typical workflow: write the
-    new claim first with `clms add ...`, verify it, THEN refute the old one.
-  - --cascade walks the depends_on graph and flags every transitive
-    dependent of <id> as suspect. without --cascade you get a warning
-    listing them but no auto-flag. use --cascade unless you have a reason
-    not to.
-"#;
-
-const RERUN_HELP: &str = r#"
-EXAMPLES
-  clms rerun 1                       # re-execute stored cmd, append evidence
-  clms rerun 1 --acknowledge-drift   # acknowledge if test file changed
-
-NOTES
-  - requires the original verify to have stored a --cmd. if missing, errors.
-  - finds the latest evidence on the claim whose method is runnable
-    (prop-test, integration-test, replay-test, or stat-test) and has a
-    stored cmd, re-executes via `sh -c "<cmd>"`, captures exit code +
-    stdout hash + new ref_hash, appends as fresh evidence. integration-test
-    --target and replay-test --dataset are carried forward from the prior.
-  - if the test file's content changed since prior evidence, drift is
-    detected and rerun refuses with exit 1 unless --acknowledge-drift is set.
-  - rerun does NOT change the claim's state. use it to confirm a verified
-    claim still holds, or to capture fresh evidence over time.
-"#;
-
-const DIFF_HELP: &str = r#"
-EXAMPLES
-  clms diff-evidence 1
-  clms --format ai diff-evidence 1   # full json for agent inspection
-
-NOTES
-  shows every evidence entry on a claim chronologically with hashes,
-  p-values, exit codes, and notes. useful for spotting silent drift
-  (file hashes that changed between runs) and tracking how a claim's
-  support has evolved over multiple verify/rerun cycles.
-"#;
+const DIFF_HELP: &str = include_str!("help_text/diff.txt");
 
 #[derive(Subcommand)]
 enum Cmd {
@@ -323,39 +155,9 @@ struct PurgeArgs {
     agent: Option<String>,
 }
 
-const ARCHAEOLOGY_HELP: &str = r#"
-EXAMPLES
-  clms archaeology suggest                          # harvest candidates, print json to stdout
-  clms archaeology suggest --max 5 -o cand.json     # write to file, cap at 5
-  clms archaeology commit --from-plan survivors.json  # ingest curated survivors
-  clms archaeology purge --session backfill-<ts>    # remove a backfill session
+const ARCHAEOLOGY_HELP: &str = include_str!("help_text/archaeology.txt");
 
-v2 CONTRACT
-  archaeology is a CANDIDACY engine, not a verification engine.
-  - phase 1 (suggest): byte-walks source for `// clms-claim:` and `# clms-claim:`
-    annotations. bounded-N (default 10, ceiling 50). NEVER writes claims.
-  - phase 2 (debate): orchestrator-agnostic. pi-subagents reference impl uses the
-    `clms.judge` agent (.pi/agents/clms-judge.md). drop is structural default.
-  - phase 3 (commit): writes `state: pending` claims with archaeology_meta.
-    promotion to verified happens later via `clms verify`. always pending.
-
-SEE ALSO
-  docs/archaeology.md      full design + signal taxonomy + protocol contract
-  clms verify              promote pending claims after archaeology commits them
-  clms context --exclude-agent archaeology   filter backfill from live ctx
-"#;
-
-const SCHEMA_HELP: &str = r#"
-EXAMPLES
-  clms schema                          # human-readable schema overview
-  clms --format ai schema              # full json schema for agent self-discovery
-
-NOTES
-  emits the requirement matrix per evidence method (mirrors what `verify`
-  enforces at runtime), plus enum values for states, confidence tiers, edge
-  types, and output formats. cache it once per agent session and you can
-  build valid `verify` invocations without trial-and-error.
-"#;
+const SCHEMA_HELP: &str = include_str!("help_text/schema.txt");
 
 #[derive(Args)]
 struct AddArgs {
