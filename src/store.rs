@@ -160,108 +160,141 @@ impl Store {
     }
 }
 
+/// dispatch to per-method validator. behavior preserved exactly; the only
+/// change vs pre-refactor is that each per-method block is now its own fn,
+/// so cyclomatic complexity is bounded per validator instead of stacking.
 pub fn validate_evidence(ev: &Evidence) -> Result<()> {
     use crate::models::EvidenceMethod::*;
     match ev.method {
-        PropTest => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("prop-test requires --ref <path-to-test-file>"));
-            }
-            if ev.exit_code.is_none() {
-                return Err(anyhow!("prop-test requires --exit-code <int>"));
-            }
-            if ev.cmd.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(anyhow!(
-                    "prop-test requires --cmd \"<shell cmd that ran the proptest/quickcheck/fuzz>\". the cmd must be re-runnable for falsification audit."
-                ));
-            }
-        }
-        IntegrationTest => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("integration-test requires --ref <path-to-test-file>"));
-            }
-            if ev.exit_code.is_none() {
-                return Err(anyhow!("integration-test requires --exit-code <int>"));
-            }
-            if ev.target.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(anyhow!(
-                    "integration-test requires --target <url-or-host>. the test must hit a real external system the author does not control; without --target the falsification surface is undocumented."
-                ));
-            }
-            if ev.cmd.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(anyhow!(
-                    "integration-test requires --cmd \"<shell cmd that probed --target>\"."
-                ));
-            }
-        }
-        ReplayTest => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("replay-test requires --ref <path-to-strategy-or-replay-script>"));
-            }
-            if ev.exit_code.is_none() {
-                return Err(anyhow!("replay-test requires --exit-code <int>"));
-            }
-            let dataset = ev.dataset.as_deref().unwrap_or("").trim();
-            if dataset.is_empty() {
-                return Err(anyhow!(
-                    "replay-test requires --dataset <path>. the dataset must be real-world capture (not synthetic); it is content-hashed for tamper-evidence."
-                ));
-            }
-            if ev.dataset_hash.is_none() {
-                return Err(anyhow!(
-                    "replay-test requires the dataset at --dataset to exist as a local file at verify time so it can be content-hashed. path '{}' could not be hashed.",
-                    dataset
-                ));
-            }
-            if ev.cmd.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(anyhow!(
-                    "replay-test requires --cmd \"<shell cmd that replayed --dataset through --ref>\"."
-                ));
-            }
-        }
-        StatTest => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("stat-test requires --ref <path>"));
-            }
-            if ev.p_value.is_none() {
-                return Err(anyhow!("stat-test requires --p-value <float>"));
-            }
-            if ev.sample_size.is_none() {
-                return Err(anyhow!("stat-test requires --sample-size <int>"));
-            }
-            if ev.test_type.is_none() {
-                return Err(anyhow!(
-                    "stat-test requires --test-type <name> (e.g. ks, t, chi2)"
-                ));
-            }
-            if ev.data_source.is_none() {
-                return Err(anyhow!(
-                    "stat-test requires --data-source <real|live>. simulated/synthetic data is refused: it cannot falsify a claim about reality."
-                ));
-            }
-        }
-        Observed => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("observed requires --ref <path-url-or-hash>"));
-            }
-        }
-        Documented => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("documented requires --ref <url>"));
-            }
-            if ev.quote.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(anyhow!(
-                    "documented requires --quote \"<exact text from doc>\""
-                ));
-            }
-        }
-        Derived => {
-            if ev.from_claims.len() < 2 {
-                return Err(anyhow!(
-                    "derived requires at least two --from <claim_id> entries"
-                ));
-            }
-        }
+        PropTest => validate_prop_test(ev),
+        IntegrationTest => validate_integration_test(ev),
+        ReplayTest => validate_replay_test(ev),
+        StatTest => validate_stat_test(ev),
+        Observed => validate_observed(ev),
+        Documented => validate_documented(ev),
+        Derived => validate_derived(ev),
+    }
+}
+
+#[inline]
+fn missing_ref(ev: &Evidence) -> bool {
+    ev.r#ref.is_empty()
+}
+
+#[inline]
+fn missing_str(opt: &Option<String>) -> bool {
+    opt.as_deref().unwrap_or("").trim().is_empty()
+}
+
+fn validate_prop_test(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("prop-test requires --ref <path-to-test-file>"));
+    }
+    if ev.exit_code.is_none() {
+        return Err(anyhow!("prop-test requires --exit-code <int>"));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "prop-test requires --cmd \"<shell cmd that ran the proptest/quickcheck/fuzz>\". the cmd must be re-runnable for falsification audit."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_integration_test(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("integration-test requires --ref <path-to-test-file>"));
+    }
+    if ev.exit_code.is_none() {
+        return Err(anyhow!("integration-test requires --exit-code <int>"));
+    }
+    if missing_str(&ev.target) {
+        return Err(anyhow!(
+            "integration-test requires --target <url-or-host>. the test must hit a real external system the author does not control; without --target the falsification surface is undocumented."
+        ));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "integration-test requires --cmd \"<shell cmd that probed --target>\"."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_replay_test(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("replay-test requires --ref <path-to-strategy-or-replay-script>"));
+    }
+    if ev.exit_code.is_none() {
+        return Err(anyhow!("replay-test requires --exit-code <int>"));
+    }
+    let dataset = ev.dataset.as_deref().unwrap_or("").trim();
+    if dataset.is_empty() {
+        return Err(anyhow!(
+            "replay-test requires --dataset <path>. the dataset must be real-world capture (not synthetic); it is content-hashed for tamper-evidence."
+        ));
+    }
+    if ev.dataset_hash.is_none() {
+        return Err(anyhow!(
+            "replay-test requires the dataset at --dataset to exist as a local file at verify time so it can be content-hashed. path '{}' could not be hashed.",
+            dataset
+        ));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "replay-test requires --cmd \"<shell cmd that replayed --dataset through --ref>\"."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stat_test(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("stat-test requires --ref <path>"));
+    }
+    if ev.p_value.is_none() {
+        return Err(anyhow!("stat-test requires --p-value <float>"));
+    }
+    if ev.sample_size.is_none() {
+        return Err(anyhow!("stat-test requires --sample-size <int>"));
+    }
+    if ev.test_type.is_none() {
+        return Err(anyhow!(
+            "stat-test requires --test-type <name> (e.g. ks, t, chi2)"
+        ));
+    }
+    if ev.data_source.is_none() {
+        return Err(anyhow!(
+            "stat-test requires --data-source <real|live>. simulated/synthetic data is refused: it cannot falsify a claim about reality."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_observed(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("observed requires --ref <path-url-or-hash>"));
+    }
+    Ok(())
+}
+
+fn validate_documented(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("documented requires --ref <url>"));
+    }
+    if missing_str(&ev.quote) {
+        return Err(anyhow!(
+            "documented requires --quote \"<exact text from doc>\""
+        ));
+    }
+    Ok(())
+}
+
+fn validate_derived(ev: &Evidence) -> Result<()> {
+    if ev.from_claims.len() < 2 {
+        return Err(anyhow!(
+            "derived requires at least two --from <claim_id> entries"
+        ));
     }
     Ok(())
 }

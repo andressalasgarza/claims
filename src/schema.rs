@@ -4,7 +4,42 @@
 //! changes here MUST be additive (new keys ok, removing or renaming keys
 //! is a breaking change). bump `version` whenever the shape changes.
 
+use crate::models::{METHODS, REFUSED_METHODS};
 use serde_json::{json, Value};
+
+/// machine-readable dump of the method-descriptor table. agent introspection
+/// surface for `clms schema methods`. driven directly from `models::METHODS`
+/// + `models::REFUSED_METHODS` so it cannot drift from validation logic.
+///
+/// stable contract for agents:
+///   { "version": "1.1",
+///     "methods": [ { name, tier, runnable, falsification_surface,
+///                    required_fields, exclusive_flag } ... ],
+///     "refused_methods": [ { name, error_msg } ... ] }
+pub fn methods_table() -> Value {
+    let methods: Vec<Value> = METHODS
+        .iter()
+        .map(|m| {
+            json!({
+                "name": m.name,
+                "tier": m.tier.as_str(),
+                "runnable": m.runnable,
+                "falsification_surface": m.falsification_surface,
+                "required_fields": m.required_fields,
+                "exclusive_flag": m.exclusive_flag,
+            })
+        })
+        .collect();
+    let refused: Vec<Value> = REFUSED_METHODS
+        .iter()
+        .map(|r| json!({ "name": r.name, "error_msg": r.error_msg }))
+        .collect();
+    json!({
+        "version": "1.1",
+        "methods": methods,
+        "refused_methods": refused,
+    })
+}
 
 pub fn schema_value() -> Value {
     json!({

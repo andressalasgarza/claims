@@ -96,8 +96,12 @@ enum Cmd {
     /// dump top-level help + every subcommand's help in a single output. for agent context-stuffing.
     HelpAll,
     /// dump machine-readable schema (commands, evidence-method requirements, enums). for agent self-discovery.
+    /// pass `methods` as the target to get just the method-descriptor table as json (agent introspection surface).
     #[command(after_help = SCHEMA_HELP)]
-    Schema,
+    Schema {
+        /// optional sub-target. valid: `methods` (descriptor table only).
+        target: Option<String>,
+    },
     /// archaeology v2: harvest stake-signal candidates, debate via pi-subagents, commit survivors. (v1 removed.)
     #[command(after_help = ARCHAEOLOGY_HELP, subcommand_required = true, arg_required_else_help = true)]
     Archaeology {
@@ -381,7 +385,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Rerun(args) => cmd_rerun(&mut store, args, fmt),
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
         Cmd::HelpAll => cmd_help_all(),
-        Cmd::Schema => cmd_schema(fmt),
+        Cmd::Schema { target } => cmd_schema(target, fmt),
         Cmd::InstallAgents { force, dry_run } => cmd_install_agents(fmt, force, dry_run),
         Cmd::Archaeology { sub } => {
             let s = match sub {
@@ -405,7 +409,21 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 
-fn cmd_schema(fmt: OutputFormat) -> Result<()> {
+fn cmd_schema(target: Option<String>, fmt: OutputFormat) -> Result<()> {
+    if let Some(t) = target.as_deref() {
+        match t {
+            "methods" => {
+                println!("{}", serde_json::to_string_pretty(&schema::methods_table())?);
+                return Ok(());
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown schema target '{}'. valid: methods",
+                    other
+                ));
+            }
+        }
+    }
     if matches!(fmt, OutputFormat::Ai) {
         println!("{}", serde_json::to_string(&schema_value())?);
         return Ok(());
@@ -617,31 +635,43 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
     Ok(())
 }
 
+/// reject cli flags that are exclusive to a single method when used with the
+/// wrong method. driven by `MethodSpec::exclusive_flag` so adding a new
+/// flag-bearing method requires no changes here.
+fn check_exclusive_flags(method: EvidenceMethod, a: &VerifyArgs) -> Result<()> {
+    use crate::models::METHODS;
+    let present_flags: [(&str, bool); 3] = [
+        ("target", a.target.is_some()),
+        ("dataset", a.dataset.is_some()),
+        ("data-source", a.data_source.is_some()),
+    ];
+    for (flag_name, is_present) in present_flags {
+        if !is_present {
+            continue;
+        }
+        let owner = METHODS.iter().find(|m| m.exclusive_flag == Some(flag_name));
+        match owner {
+            Some(spec) if spec.variant == method => {} // ok: method owns this flag
+            Some(spec) => {
+                return Err(anyhow!(
+                    "--{} is only valid with --method {} (got --method {})",
+                    flag_name,
+                    spec.name,
+                    method.as_str()
+                ));
+            }
+            None => {} // flag has no exclusivity constraint
+        }
+    }
+    Ok(())
+}
+
 fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
+    check_exclusive_flags(m, a)?;
     let data_source = match (&m, &a.data_source) {
         (EvidenceMethod::StatTest, Some(s)) => Some(DataSource::parse(s)?),
-        (EvidenceMethod::StatTest, None) => None,
-        // non-stat-test methods reject --data-source to avoid silent ignores.
-        (_, Some(_)) => {
-            return Err(anyhow!(
-                "--data-source is only valid with --method stat-test (got --method {})",
-                m.as_str()
-            ));
-        }
-        _ => None,
+        _ => None, // non-stat-test --data-source already rejected by check_exclusive_flags
     };
-    if !matches!(m, EvidenceMethod::IntegrationTest) && a.target.is_some() {
-        return Err(anyhow!(
-            "--target is only valid with --method integration-test (got --method {})",
-            m.as_str()
-        ));
-    }
-    if !matches!(m, EvidenceMethod::ReplayTest) && a.dataset.is_some() {
-        return Err(anyhow!(
-            "--dataset is only valid with --method replay-test (got --method {})",
-            m.as_str()
-        ));
-    }
     let dataset_hash = a.dataset.as_deref().and_then(hash_ref_if_local);
     Ok(Evidence {
         method: m,
