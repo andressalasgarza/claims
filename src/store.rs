@@ -163,6 +163,62 @@ impl Store {
 pub fn validate_evidence(ev: &Evidence) -> Result<()> {
     use crate::models::EvidenceMethod::*;
     match ev.method {
+        PropTest => {
+            if ev.r#ref.is_empty() {
+                return Err(anyhow!("prop-test requires --ref <path-to-test-file>"));
+            }
+            if ev.exit_code.is_none() {
+                return Err(anyhow!("prop-test requires --exit-code <int>"));
+            }
+            if ev.cmd.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(anyhow!(
+                    "prop-test requires --cmd \"<shell cmd that ran the proptest/quickcheck/fuzz>\". the cmd must be re-runnable for falsification audit."
+                ));
+            }
+        }
+        IntegrationTest => {
+            if ev.r#ref.is_empty() {
+                return Err(anyhow!("integration-test requires --ref <path-to-test-file>"));
+            }
+            if ev.exit_code.is_none() {
+                return Err(anyhow!("integration-test requires --exit-code <int>"));
+            }
+            if ev.target.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(anyhow!(
+                    "integration-test requires --target <url-or-host>. the test must hit a real external system the author does not control; without --target the falsification surface is undocumented."
+                ));
+            }
+            if ev.cmd.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(anyhow!(
+                    "integration-test requires --cmd \"<shell cmd that probed --target>\"."
+                ));
+            }
+        }
+        ReplayTest => {
+            if ev.r#ref.is_empty() {
+                return Err(anyhow!("replay-test requires --ref <path-to-strategy-or-replay-script>"));
+            }
+            if ev.exit_code.is_none() {
+                return Err(anyhow!("replay-test requires --exit-code <int>"));
+            }
+            let dataset = ev.dataset.as_deref().unwrap_or("").trim();
+            if dataset.is_empty() {
+                return Err(anyhow!(
+                    "replay-test requires --dataset <path>. the dataset must be real-world capture (not synthetic); it is content-hashed for tamper-evidence."
+                ));
+            }
+            if ev.dataset_hash.is_none() {
+                return Err(anyhow!(
+                    "replay-test requires the dataset at --dataset to exist as a local file at verify time so it can be content-hashed. path '{}' could not be hashed.",
+                    dataset
+                ));
+            }
+            if ev.cmd.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(anyhow!(
+                    "replay-test requires --cmd \"<shell cmd that replayed --dataset through --ref>\"."
+                ));
+            }
+        }
         StatTest => {
             if ev.r#ref.is_empty() {
                 return Err(anyhow!("stat-test requires --ref <path>"));
@@ -178,13 +234,10 @@ pub fn validate_evidence(ev: &Evidence) -> Result<()> {
                     "stat-test requires --test-type <name> (e.g. ks, t, chi2)"
                 ));
             }
-        }
-        CodeTest => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("code-test requires --ref <path-or-cmd>"));
-            }
-            if ev.exit_code.is_none() {
-                return Err(anyhow!("code-test requires --exit-code <int>"));
+            if ev.data_source.is_none() {
+                return Err(anyhow!(
+                    "stat-test requires --data-source <real|live>. simulated/synthetic data is refused: it cannot falsify a claim about reality."
+                ));
             }
         }
         Observed => {
@@ -255,12 +308,13 @@ pub fn run_cmd(cmd: &str) -> Result<(i32, Vec<u8>)> {
 }
 
 /// find the latest evidence on a claim that has a stored cmd. used by `rerun`.
+/// any method that reports `is_runnable() == true` qualifies.
 pub fn latest_runnable_evidence(claim: &Claim) -> Option<&Evidence> {
     claim
         .evidence
         .iter()
         .rev()
-        .find(|e| e.cmd.is_some() && matches!(e.method, crate::models::EvidenceMethod::CodeTest | crate::models::EvidenceMethod::StatTest))
+        .find(|e| e.cmd.is_some() && e.method.is_runnable())
 }
 
 pub fn cascade_suspect(store: &mut Store, seq: u64) -> Result<Vec<u64>> {

@@ -117,7 +117,7 @@ comment after `clms verify` confirms it.
       "where": "src/store.rs:142",
       "snippet": "// (proposal) clms-claim: ledger writes are append-only",
       "suggested_evidence": [
-        {"method": "code-test", "cmd": "cargo test test_append_only"}
+        {"method": "prop-test", "cmd": "cargo test --release ledger_append_props"}
       ]
     }
   ]
@@ -125,6 +125,10 @@ comment after `clms verify` confirms it.
 ```
 
 - `text` and `where` required; `snippet` and `suggested_evidence` optional
+- `suggested_evidence.method` must be one of the falsifiable methods
+  (`prop-test` | `integration-test` | `replay-test` | `stat-test` |
+  `observed` | `documented` | `derived`). `unit-test`, `code-test`, and
+  `sim-test` are rejected at promotion time.
 - candidate_id is hash-stable across re-runs (kind + text + where), so
   judge transcripts re-attach if you regenerate proposals.json with the
   same content
@@ -183,7 +187,7 @@ emits top-N. tie-break by source priority (table above, top to bottom).
         "snippet": "// clms-claim: ledger writes are append-only"
       },
       "suggested_evidence": [
-        {"method": "code-test", "cmd": "cargo test test_append_only", "note": "advisory; not run by archaeology"}
+        {"method": "prop-test", "cmd": "cargo test --release ledger_append_props", "note": "advisory; not run by archaeology"}
       ],
       "source_meta": {"file": "src/store.rs", "line": 142},
       "created_at": "2024-08-12T19:31:04Z",
@@ -408,7 +412,7 @@ clms refuses to commit if:
     "kind": "clms-claim-annotation",
     "stake_signal": {"where": "src/store.rs:142", "snippet": "..."},
     "suggested_evidence": [
-      {"method": "code-test", "cmd": "cargo test test_append_only"}
+      {"method": "prop-test", "cmd": "cargo test --release ledger_append_props"}
     ],
     "debate_transcript_ref": ".archaeology/<session>/c-7f3a.json",
     "judge_rationale": "<survivor rationale from debate>",
@@ -470,8 +474,12 @@ clms archaeology suggest --max 10 > candidates.json
 # orchestrate debate (pi-subagents recipe above)
 clms archaeology commit --from-plan survivors.json --keep 8
 
-# 4. claims land as pending. verify when ready:
-clms verify <id> --method code-test --cmd "<suggested_evidence cmd>" ...
+# 4. claims land as pending. verify when ready. pick the method that matches
+#    the falsification surface (prop-test | integration-test | replay-test |
+#    stat-test). code-test was removed in schema 1.1.
+clms verify <id> --method prop-test --cmd "<suggested_evidence cmd>" \
+    --ref <test-file> --exit-code 0
+# or integration-test --target <url> / replay-test --dataset <path> / stat-test --data-source real
 ```
 
 ## test plan

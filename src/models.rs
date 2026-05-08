@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "1.1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -46,20 +46,76 @@ impl ConfidenceTier {
     }
 }
 
+/// every method has a falsification surface — a data source the author does not
+/// fully control. `unit-test` and `sim-test` were intentionally excluded: both are
+/// confirmatory by construction (you pick the input AND the expected output, or
+/// you generate data from the same assumptions you're testing). they cannot
+/// disagree with you, so they cannot serve as evidence in a falsifiable ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EvidenceMethod {
+    /// property-based / fuzz test. randomized input generator explores input space;
+    /// any failing case falsifies the property. requires --ref --exit-code --cmd.
+    PropTest,
+    /// hits a real external system (api/db/host) the author does not control.
+    /// requires --ref --exit-code --target --cmd.
+    IntegrationTest,
+    /// runs code against frozen captured real-world data (not synthetic).
+    /// requires --ref --exit-code --dataset --cmd.
+    ReplayTest,
+    /// statistical hypothesis test on real or live data. simulated data refused.
+    /// requires --ref --p-value --sample-size --test-type --data-source.
     StatTest,
-    CodeTest,
+    /// captured runtime artifact (tx hash, log line, response). requires --ref.
     Observed,
+    /// primary-source documentation + exact quote. requires --ref --quote.
     Documented,
+    /// inference from at least two other claims. requires --from N (>=2).
     Derived,
+}
+
+/// for `stat-test`. simulated data is refused; the data must come from a source
+/// the author does not control (real captured samples or live measurement).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DataSource {
+    /// real captured samples (e.g. a parquet file of past binance ticks).
+    Real,
+    /// live measurement at verify time (e.g. polling a real api right now).
+    Live,
+}
+
+impl DataSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DataSource::Real => "real",
+            DataSource::Live => "live",
+        }
+    }
+
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "real" => Ok(Self::Real),
+            "live" => Ok(Self::Live),
+            "simulated" | "sim" | "synthetic" => Err(anyhow::anyhow!(
+                "data-source '{}' refused. simulated/synthetic data cannot falsify a claim about reality. either capture real data and use --data-source=real, or file the claim with --method=derived and cite the simulator's underlying claims.",
+                s
+            )),
+            _ => Err(anyhow::anyhow!(
+                "invalid --data-source '{}'. valid: real|live",
+                s
+            )),
+        }
+    }
 }
 
 impl EvidenceMethod {
     pub fn tier(&self) -> ConfidenceTier {
         match self {
-            EvidenceMethod::StatTest | EvidenceMethod::CodeTest => ConfidenceTier::Empirical,
+            EvidenceMethod::PropTest
+            | EvidenceMethod::IntegrationTest
+            | EvidenceMethod::ReplayTest
+            | EvidenceMethod::StatTest => ConfidenceTier::Empirical,
             EvidenceMethod::Observed => ConfidenceTier::Observed,
             EvidenceMethod::Documented => ConfidenceTier::Documented,
             EvidenceMethod::Derived => ConfidenceTier::Derived,
@@ -68,23 +124,48 @@ impl EvidenceMethod {
 
     pub fn as_str(&self) -> &'static str {
         match self {
+            EvidenceMethod::PropTest => "prop-test",
+            EvidenceMethod::IntegrationTest => "integration-test",
+            EvidenceMethod::ReplayTest => "replay-test",
             EvidenceMethod::StatTest => "stat-test",
-            EvidenceMethod::CodeTest => "code-test",
             EvidenceMethod::Observed => "observed",
             EvidenceMethod::Documented => "documented",
             EvidenceMethod::Derived => "derived",
         }
     }
 
+    /// true if the method produces a re-runnable shell artifact. used by
+    /// `clms rerun` to find the most recent runnable evidence on a claim.
+    pub fn is_runnable(&self) -> bool {
+        matches!(
+            self,
+            EvidenceMethod::PropTest
+                | EvidenceMethod::IntegrationTest
+                | EvidenceMethod::ReplayTest
+                | EvidenceMethod::StatTest
+        )
+    }
+
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s {
+            "prop-test" => Ok(Self::PropTest),
+            "integration-test" => Ok(Self::IntegrationTest),
+            "replay-test" => Ok(Self::ReplayTest),
             "stat-test" => Ok(Self::StatTest),
-            "code-test" => Ok(Self::CodeTest),
             "observed" => Ok(Self::Observed),
             "documented" => Ok(Self::Documented),
             "derived" => Ok(Self::Derived),
+            "unit-test" => Err(anyhow::anyhow!(
+                "method 'unit-test' is not a valid evidence method. unit tests are confirmatory by construction (you pick the input and the expected output, so the test cannot disagree with you). use 'prop-test' for randomized input exploration, 'integration-test' for real external systems, 'replay-test' for frozen real-world data, or 'observed' for a captured artifact."
+            )),
+            "code-test" => Err(anyhow::anyhow!(
+                "method 'code-test' was removed in schema 1.1. it conflated unit/integration/replay/property tests under one tier. pick one of: prop-test | integration-test | replay-test. see `clms verify --help`."
+            )),
+            "sim-test" => Err(anyhow::anyhow!(
+                "method 'sim-test' is not a valid evidence method. running a stat-test on synthetic data only proves your simulator behaves like your simulator (circular). either capture real data and use 'stat-test --data-source=real', or file the result as 'derived' citing the simulator's underlying claims."
+            )),
             _ => Err(anyhow::anyhow!(
-                "invalid method '{}'. valid: stat-test|code-test|observed|documented|derived",
+                "invalid method '{}'. valid: prop-test|integration-test|replay-test|stat-test|observed|documented|derived",
                 s
             )),
         }
@@ -107,6 +188,20 @@ pub struct Evidence {
     pub cmd: Option<String>,
     /// blake3 hash of stdout captured at verify time. drift detection on rerun.
     pub stdout_hash: Option<String>,
+    /// integration-test: required. the external system probed (url/host/endpoint).
+    /// recorded so the falsification surface is auditable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// replay-test: required. path to the real-world dataset replayed.
+    /// content-hashed at write-time via `ref_hash` mechanism.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset: Option<String>,
+    /// replay-test: blake3 hash of dataset at verify time. drift detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_hash: Option<String>,
+    /// stat-test: required. real | live (simulated/synthetic refused at parse time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_source: Option<DataSource>,
     pub recorded_at: DateTime<Utc>,
 }
 

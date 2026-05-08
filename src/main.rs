@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use colored::*;
-use models::{Claim, Edge, EdgeType, Evidence, EvidenceMethod, State, SCHEMA_VERSION};
+use models::{Claim, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, State, SCHEMA_VERSION};
 use output::OutputFormat;
 use std::path::PathBuf;
 use store::{
@@ -21,7 +21,7 @@ const TOP_HELP: &str = r#"
 QUICKSTART
   clms add "polymarket lags binance ~300ms" --tag market:btc
   clms verify 1 --method stat-test --ref ./test.py --cmd "python3 ./test.py" \
-               --p-value 0.003 --sample-size 4821 --test-type ks
+               --p-value 0.003 --sample-size 4821 --test-type ks --data-source real
   clms add "we can arb this lag" --depends-on 1
   clms refute 1 --by 3 --reason "lookahead bias" --cascade
   clms timeline
@@ -35,10 +35,19 @@ STATES
   suspect      a claim it depended on was refuted; needs re-verification
 
 CONFIDENCE TIERS (auto-derived from evidence method)
-  empirical    stat-test or code-test    (strongest)
-  observed     observed (runtime data)
-  documented   official primary source
+  empirical    prop-test | integration-test | replay-test | stat-test  (strongest)
+  observed     observed (captured runtime artifact)
+  documented   official primary source + exact quote
   derived      inference from >= 2 other claims
+
+FALSIFIABILITY (the design contract)
+  every method's evidence must come from a source the author does not
+  fully control. unit-test and sim-test are REFUSED at parse time:
+    - unit tests are confirmatory by construction (you pick input AND output)
+    - sim-tests on synthetic data only prove your simulator behaves like
+      your simulator (circular w/ the assumptions you're testing)
+  if you cannot find a real falsification surface, the claim does not
+  belong in this ledger.
 
 FOR AGENTS
   always run with --format ai for json output. set CLAIMS_AGENT and
@@ -95,29 +104,66 @@ NOTES
 
 const VERIFY_HELP: &str = r#"
 EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
-  stat-test   --ref --test-type --p-value --sample-size  [--cmd recommended]
-  code-test   --ref --exit-code                          [--cmd recommended]
-  observed    --ref
-  documented  --ref --quote "<exact text from doc>"
-  derived     --from <id> --from <id>          (min 2)
+  prop-test         --ref --exit-code --cmd
+  integration-test  --ref --exit-code --cmd --target <url-or-host>
+  replay-test       --ref --exit-code --cmd --dataset <path>
+  stat-test         --ref --p-value --sample-size --test-type --data-source <real|live>
+                                                          [--cmd recommended]
+  observed          --ref
+  documented        --ref --quote "<exact text from doc>"
+  derived           --from <id> --from <id>          (min 2)
+
+REFUSED METHODS (parse-time error)
+  unit-test  confirmatory only. you picked the input AND the expected output;
+             the test cannot disagree with you. use prop-test for randomized
+             input exploration, integration-test for real systems, replay-test
+             for real captured data, or observed for a single artifact.
+  code-test  removed in schema 1.1. ambiguous about falsification surface.
+             pick one of: prop-test | integration-test | replay-test.
+  sim-test   synthetic data is circular w/ the assumptions you're testing.
+             use stat-test --data-source=real, or file as derived citing the
+             simulator's underlying claims.
 
 EXAMPLES
-  clms verify 1 --method stat-test --ref ./test.py \
-    --test-type ks --p-value 0.003 --sample-size 4821 \
+  # property-based test (randomized input generator)
+  clms verify 1 --method prop-test --ref ./tests/sort_props.rs --exit-code 0 \
+    --cmd "cargo test --release sort_props -- --nocapture"
+
+  # integration test against a real external system
+  clms verify 2 --method integration-test --ref ./tests/poly_api.py --exit-code 0 \
+    --target https://clob.polymarket.com \
+    --cmd "python3 ./tests/poly_api.py"
+
+  # replay test against frozen real-world capture
+  clms verify 3 --method replay-test --ref ./strategies/mm_v3.py --exit-code 0 \
+    --dataset ./data/binance_btc_l2_2024-03.parquet \
+    --cmd "python3 ./strategies/mm_v3.py --replay ./data/binance_btc_l2_2024-03.parquet"
+
+  # statistical test on real samples
+  clms verify 4 --method stat-test --ref ./test.py \
+    --test-type ks --p-value 0.003 --sample-size 4821 --data-source real \
     --cmd "python3 ./test.py"
 
-  clms verify 2 --method code-test --ref ./bench.sh --exit-code 0 \
-    --cmd "bash ./bench.sh"
-
-  clms verify 4 --method documented --ref https://docs.poly.com/api/limits \
+  # documented source
+  clms verify 5 --method documented --ref https://docs.poly.com/api/limits \
     --quote "default rate limit is 100 requests per minute"
+
+FALSIFICATION SURFACES
+  prop-test         randomized input generator finds counterexamples
+  integration-test  the real external system at --target can disagree
+  replay-test       frozen real-world data at --dataset can disagree
+  stat-test         real/live samples can fail to reject the null
+  observed          the artifact can be missing or contradictory
+  documented        the quote can be missing, edited, or contradicted
+  derived           upstream claims can be refuted (cascade)
 
 DRIFT
   if --ref's file content has changed since a prior evidence entry on this
   same claim, verify will refuse with exit 1 and show both hashes. add
   --acknowledge-drift if the iteration is intentional. if the new result
   contradicts the prior conclusion, you should refute the claim and write a
-  new one instead of acknowledging drift.
+  new one instead of acknowledging drift. the same drift logic applies to
+  --dataset on replay-test.
 
 CONFIDENCE
   auto-derived from method. cannot be set manually. add stronger evidence
@@ -146,9 +192,11 @@ EXAMPLES
 
 NOTES
   - requires the original verify to have stored a --cmd. if missing, errors.
-  - finds the latest evidence on the claim with method in {stat-test, code-test}
-    and a stored cmd, re-executes via `sh -c "<cmd>"`, captures exit code +
-    stdout hash + new ref_hash, appends as fresh evidence.
+  - finds the latest evidence on the claim whose method is runnable
+    (prop-test, integration-test, replay-test, or stat-test) and has a
+    stored cmd, re-executes via `sh -c "<cmd>"`, captures exit code +
+    stdout hash + new ref_hash, appends as fresh evidence. integration-test
+    --target and replay-test --dataset are carried forward from the prior.
   - if the test file's content changed since prior evidence, drift is
     detected and rerun refuses with exit 1 unless --acknowledge-drift is set.
   - rerun does NOT change the claim's state. use it to confirm a verified
@@ -360,6 +408,17 @@ struct VerifyArgs {
     /// shell command that produced this evidence. enables `claims rerun <id>` later.
     #[arg(long)]
     cmd: Option<String>,
+    /// integration-test only: real external system probed (url/host/endpoint).
+    /// the falsification surface must be auditable.
+    #[arg(long)]
+    target: Option<String>,
+    /// replay-test only: path to real-world captured dataset (parquet/csv/jsonl).
+    /// content-hashed at write time. synthetic data is not allowed.
+    #[arg(long)]
+    dataset: Option<String>,
+    /// stat-test only: real | live. simulated/synthetic data is refused.
+    #[arg(long)]
+    data_source: Option<String>,
     /// required when this --ref's content has changed since a prior evidence entry on the same claim.
     #[arg(long)]
     acknowledge_drift: bool,
@@ -542,7 +601,7 @@ fn run(cli: Cli) -> Result<()> {
 
 fn schema_value() -> serde_json::Value {
     serde_json::json!({
-        "version": "2.0",
+        "version": "2.1",
         "archaeology": {
             "version": "archaeology/v2",
             "contract": "candidacy engine, NOT verification engine. always writes state=pending. promotion via clms verify.",
@@ -618,35 +677,61 @@ fn schema_value() -> serde_json::Value {
                 "field":     "offending --flag (clap errors only, when extractable)"
             }
         },
+        "falsifiability_principle": "every method's evidence must come from a source the author does not fully control. unit-test and sim-test are intentionally absent: they are confirmatory by construction (the author picks both the input and the expected output, or generates data from the same assumptions being tested) and cannot disagree with the claim.",
+        "refused_methods": {
+            "unit-test": "confirmatory only. parse-time error. use prop-test for randomized inputs, integration-test for real systems, replay-test for real captured data, or observed for an artifact.",
+            "code-test": "removed in schema 1.1. ambiguous about falsification surface. pick prop-test | integration-test | replay-test.",
+            "sim-test": "running stats on synthetic data only proves the simulator behaves like itself (circular). use stat-test --data-source=real, or file as derived citing the simulator's underlying claims."
+        },
         "evidence_methods": {
-            "stat-test": {
-                "required": ["ref", "p_value", "sample_size", "test_type"],
-                "recommended": ["cmd"],
+            "prop-test": {
+                "required": ["ref", "exit_code", "cmd"],
+                "recommended": [],
                 "confidence": "empirical",
+                "falsification_surface": "randomized input generator (proptest/quickcheck/fuzz). a counterexample falsifies the property.",
                 "notes": "file at --ref is content-hashed for drift detection"
             },
-            "code-test": {
-                "required": ["ref", "exit_code"],
+            "integration-test": {
+                "required": ["ref", "exit_code", "target", "cmd"],
+                "recommended": [],
+                "confidence": "empirical",
+                "falsification_surface": "the real external system at --target. the test must hit a system the author does not control (api/db/host).",
+                "notes": "file at --ref is content-hashed; --target is recorded for audit"
+            },
+            "replay-test": {
+                "required": ["ref", "exit_code", "dataset", "cmd"],
+                "recommended": [],
+                "confidence": "empirical",
+                "falsification_surface": "frozen real-world capture at --dataset. data was generated independently of the code being tested.",
+                "notes": "both --ref and --dataset are content-hashed at write time. synthetic datasets violate the contract."
+            },
+            "stat-test": {
+                "required": ["ref", "p_value", "sample_size", "test_type", "data_source"],
                 "recommended": ["cmd"],
                 "confidence": "empirical",
+                "falsification_surface": "real or live data samples. simulated/synthetic data is rejected at parse time.",
+                "data_source_values": ["real", "live"],
                 "notes": "file at --ref is content-hashed for drift detection"
             },
             "observed": {
                 "required": ["ref"],
                 "recommended": [],
                 "confidence": "observed",
+                "falsification_surface": "a captured artifact (tx hash, log line, response). its absence or contradiction would falsify.",
                 "notes": "runtime data; --ref is path/url/hash"
             },
             "documented": {
                 "required": ["ref", "quote"],
                 "recommended": [],
                 "confidence": "documented",
+                "falsification_surface": "primary-source document. quote can be missing, edited, or contradicted.",
                 "notes": "--ref is the doc url; --quote is exact text"
             },
             "derived": {
                 "required": ["from (>=2)"],
                 "recommended": [],
                 "confidence": "derived",
+                "falsification_surface": "upstream claims. refutation of any cited claim cascades.",
                 "notes": "inference from at least 2 other claim ids"
             }
         },
@@ -834,8 +919,33 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Evidence {
-    Evidence {
+fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
+    let data_source = match (&m, &a.data_source) {
+        (EvidenceMethod::StatTest, Some(s)) => Some(DataSource::parse(s)?),
+        (EvidenceMethod::StatTest, None) => None,
+        // non-stat-test methods reject --data-source to avoid silent ignores.
+        (_, Some(_)) => {
+            return Err(anyhow!(
+                "--data-source is only valid with --method stat-test (got --method {})",
+                m.as_str()
+            ));
+        }
+        _ => None,
+    };
+    if !matches!(m, EvidenceMethod::IntegrationTest) && a.target.is_some() {
+        return Err(anyhow!(
+            "--target is only valid with --method integration-test (got --method {})",
+            m.as_str()
+        ));
+    }
+    if !matches!(m, EvidenceMethod::ReplayTest) && a.dataset.is_some() {
+        return Err(anyhow!(
+            "--dataset is only valid with --method replay-test (got --method {})",
+            m.as_str()
+        ));
+    }
+    let dataset_hash = a.dataset.as_deref().and_then(hash_ref_if_local);
+    Ok(Evidence {
         method: m,
         r#ref: a.r#ref.clone(),
         note: a.note.clone(),
@@ -848,8 +958,12 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Evidence {
         ref_hash: hash_ref_if_local(&a.r#ref),
         cmd: a.cmd.clone(),
         stdout_hash: None,
+        target: a.target.clone(),
+        dataset: a.dataset.clone(),
+        dataset_hash,
+        data_source,
         recorded_at: Utc::now(),
-    }
+    })
 }
 
 fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()> {
@@ -862,7 +976,7 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
         ));
     }
     let m = EvidenceMethod::parse(&a.method)?;
-    let ev = build_evidence(&a, m);
+    let ev = build_evidence(&a, m)?;
     validate_evidence(&ev)?;
     if let Some((prior_hash, prior_at)) = detect_drift(&claim, &ev.r#ref, &ev.ref_hash) {
         if !a.acknowledge_drift {
@@ -898,13 +1012,16 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
     }
     let prior = latest_runnable_evidence(&claim).ok_or_else(|| {
         anyhow!(
-            "claim #{} has no runnable evidence (need code-test or stat-test with stored --cmd)",
+            "claim #{} has no runnable evidence (need prop-test, integration-test, replay-test, or stat-test with stored --cmd)",
             seq
         )
     })?;
     let cmd = prior.cmd.clone().unwrap();
     let r#ref = prior.r#ref.clone();
     let method = prior.method;
+    let prior_target = prior.target.clone();
+    let prior_dataset = prior.dataset.clone();
+    let prior_data_source = prior.data_source;
     println!("rerunning: {}", cmd);
     let (exit_code, stdout) = run_cmd(&cmd)?;
     let new_ref_hash = hash_ref_if_local(&r#ref);
@@ -922,6 +1039,7 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
         }
     }
 
+    let new_dataset_hash = prior_dataset.as_deref().and_then(hash_ref_if_local);
     let ev = Evidence {
         method,
         r#ref,
@@ -935,6 +1053,10 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
         ref_hash: new_ref_hash,
         cmd: Some(cmd),
         stdout_hash,
+        target: prior_target,
+        dataset: prior_dataset,
+        dataset_hash: new_dataset_hash,
+        data_source: prior_data_source,
         recorded_at: Utc::now(),
     };
     claim.evidence.push(ev);
@@ -947,11 +1069,22 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
 fn evidence_extras_diff(e: &Evidence) -> String {
     match e.method {
         EvidenceMethod::StatTest => format!(
-            " p={} n={}",
+            " p={} n={} src={}",
             e.p_value.map(|v| v.to_string()).unwrap_or("?".into()),
-            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into())
+            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.data_source.map(|d| d.as_str()).unwrap_or("?")
         ),
-        EvidenceMethod::CodeTest => format!(" exit={}", e.exit_code.unwrap_or(-1)),
+        EvidenceMethod::PropTest => format!(" exit={}", e.exit_code.unwrap_or(-1)),
+        EvidenceMethod::IntegrationTest => format!(
+            " exit={} target={}",
+            e.exit_code.unwrap_or(-1),
+            e.target.as_deref().unwrap_or("?")
+        ),
+        EvidenceMethod::ReplayTest => format!(
+            " exit={} dataset={}",
+            e.exit_code.unwrap_or(-1),
+            e.dataset.as_deref().unwrap_or("?")
+        ),
         _ => String::new(),
     }
 }
@@ -970,6 +1103,10 @@ fn diff_evidence_ai(claim: &Claim) -> Result<String> {
                 "p_value": e.p_value,
                 "sample_size": e.sample_size,
                 "exit_code": e.exit_code,
+                "target": e.target,
+                "dataset": e.dataset,
+                "dataset_hash": e.dataset_hash,
+                "data_source": e.data_source.map(|d| d.as_str()),
                 "note": e.note,
             })
         })
@@ -1021,6 +1158,10 @@ fn refute_evidence(by: u64, reason: String) -> Evidence {
         ref_hash: None,
         cmd: None,
         stdout_hash: None,
+        target: None,
+        dataset: None,
+        dataset_hash: None,
+        data_source: None,
         recorded_at: Utc::now(),
     }
 }

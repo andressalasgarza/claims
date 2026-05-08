@@ -77,7 +77,7 @@ write `.archaeology/proposals.json` with this exact shape:
       "snippet": "<optional short context for the judge>",
       "suggested_evidence": [
         {
-          "method": "code-test|stat-test|log-trace|repro|external-citation|spec-cite",
+          "method": "prop-test|integration-test|replay-test|stat-test|observed|documented|derived",
           "cmd": "<optional shell command>",
           "ref": "<optional path/url>",
           "note": "<optional human note>"
@@ -98,7 +98,9 @@ constraints:
 - `snippet` is optional but helpful for judge context. if you omit it, clms
   fills in `// (proposal) clms-claim: <text>`
 - `suggested_evidence` is optional but improves verify-time UX. omit if you
-  genuinely don't know how to verify; don't fabricate
+  genuinely don't know how to verify; don't fabricate. `method` MUST be one
+  of the falsifiable methods listed above. `unit-test`, `code-test`, and
+  `sim-test` are refused at promotion time and will block `clms verify`.
 
 ## what you must NOT do
 
@@ -133,19 +135,19 @@ output (proposals.json):
       "where": "src/store.rs:33",
       "suggested_evidence": [
         {
-          "method": "code-test",
-          "cmd": "cargo test test_content_hash_roundtrip",
-          "note": "implies write_claim is deterministic per claim"
+          "method": "prop-test",
+          "cmd": "cargo test --release content_hash_roundtrip_props",
+          "note": "implies write_claim is deterministic per claim across randomized claim shapes"
         }
       ]
     },
     {
-      "text": "ledger writes are append-only; existing seqs are never overwritten",
+      "text": "ledger writes are append-only; existing seqs are never overwritten under concurrent writers",
       "where": "src/store.rs:71",
       "suggested_evidence": [
         {
-          "method": "code-test",
-          "cmd": "cargo test test_append_only_seq"
+          "method": "prop-test",
+          "cmd": "cargo test --release ledger_append_props"
         }
       ]
     }

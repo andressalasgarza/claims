@@ -431,7 +431,11 @@ fn match_marker<'a>(line: &'a str, markers: &[&str]) -> Option<(&'static str, &'
 fn parse_evidence_directive(raw: &str) -> SuggestedEvidence {
     // simple key=value parsing, no quoting. format:
     //   method=<name> [cmd=<...>] [ref=<...>]
-    let mut method = "code-test".to_string();
+    // default to prop-test for un-promoted candidates: it has the lowest
+    // setup cost among empirical methods (no --target, no --dataset) and is
+    // still falsificatory. integration-test and replay-test require
+    // explicit values that the proposer cannot pick on the agent's behalf.
+    let mut method = "prop-test".to_string();
     let mut cmd: Option<String> = None;
     let mut r#ref: Option<String> = None;
     let trimmed = raw.trim();

@@ -46,19 +46,21 @@ clms verify 1 \
   --method stat-test \
   --ref ./runs/lag_test.json \
   --test-type ks --p-value 0.003 --sample-size 4821 \
-  --note "ks-test, 1 week sample"
+  --data-source real \
+  --note "ks-test, 1 week of captured ticks"
 # → #1 [verified · empirical]
 
 clms add "we can arb this lag with fast router" --depends-on 1 --tag strategy:arb
 # → #2
 
-clms verify 2 --method code-test --ref ./router_bench.sh --exit-code 0
+clms verify 2 --method integration-test --ref ./router_bench.sh --exit-code 0 \
+  --target https://api.binance.com --cmd "bash ./router_bench.sh"
 # → #2 [verified · empirical]
 
 # later, you find the original test had lookahead bias:
 clms add "lag is actually ~500ms not 300ms" --tag market:btc
 clms verify 3 --method stat-test --ref ./runs/lag_v2.json \
-  --test-type ks --p-value 0.001 --sample-size 9000
+  --test-type ks --p-value 0.001 --sample-size 9000 --data-source real
 
 clms refute 1 --by 3 --reason "lookahead bias in v1 test" --cascade
 # → #1 refuted, #2 auto-flagged suspect (it depended on #1)
@@ -78,11 +80,28 @@ clms context    # compact verified-only digest for agent context-stuffing
 | `unverifiable` | explicitly cannot be tested (subjective, future-dependent); honesty bucket |
 | `suspect` | a claim it depended on was refuted; needs re-verification |
 
+## the falsifiability contract
+
+every evidence method's data must come from a source the author does not
+fully control. if the author picks both the input AND the expected output,
+the "test" is a tautology check, not evidence. clms refuses these methods
+at parse time:
+
+| refused method | why |
+|---|---|
+| `unit-test` | confirmatory by construction. you wrote both the input and the assertion; the test cannot disagree with you. use `prop-test`, `integration-test`, `replay-test`, or `observed`. |
+| `code-test` | removed in schema 1.1. ambiguous about which falsification surface applied. pick one of `prop-test` \| `integration-test` \| `replay-test`. |
+| `sim-test` | running stats on synthetic data only proves your simulator behaves like itself (circular w/ the assumptions you're testing). use `stat-test --data-source=real`, or file as `derived`. |
+
+if you cannot articulate a real falsification surface, the claim does not
+belong in this ledger. clms is for falsifiable findings, not code
+self-tests. that's what your test runner is for.
+
 ## confidence tiers (auto-derived from evidence)
 
 | tier | comes from | example |
 |---|---|---|
-| `empirical` | `stat-test` or `code-test` | p<0.01 ks-test, curl returns expected, exit 0 |
+| `empirical` | `prop-test`, `integration-test`, `replay-test`, `stat-test` | counterexample-finding fuzz, real api probe, backtest on captured data, ks-test on real samples |
 | `observed` | `observed` | tx hash, log line, captured response |
 | `documented` | `documented` | official primary source + exact quote |
 | `derived` | `derived` | inference from at least 2 other claims |
@@ -93,15 +112,19 @@ confidence is always max-tier across attached evidence. you cannot set it manual
 
 each method requires specific fields. missing any → exit 1, no claim is written.
 
-| method | required flags |
-|---|---|
-| `stat-test` | `--ref` `--test-type` `--p-value` `--sample-size` |
-| `code-test` | `--ref` `--exit-code` |
-| `observed` | `--ref` |
-| `documented` | `--ref` `--quote "<exact text>"` |
-| `derived` | `--from <id>` `--from <id>` (min 2) |
+| method | required flags | falsification surface |
+|---|---|---|
+| `prop-test` | `--ref` `--exit-code` `--cmd` | randomized input generator (proptest/quickcheck/fuzz) |
+| `integration-test` | `--ref` `--exit-code` `--target` `--cmd` | the real external system at `--target` |
+| `replay-test` | `--ref` `--exit-code` `--dataset` `--cmd` | frozen real-world capture at `--dataset` |
+| `stat-test` | `--ref` `--test-type` `--p-value` `--sample-size` `--data-source` | real \| live samples (simulated refused) |
+| `observed` | `--ref` | a captured artifact |
+| `documented` | `--ref` `--quote "<exact text>"` | primary-source document |
+| `derived` | `--from <id>` `--from <id>` (min 2) | upstream claims (cascade on refute) |
 
-local file refs are content-hashed at write time. tampering is detectable.
+local file refs (and `--dataset` on replay-test) are content-hashed at write
+time. tampering is detectable. `--data-source=simulated` is rejected at
+parse time.
 
 ## edges
 
@@ -250,8 +273,8 @@ full design: docs/archaeology.md. tl;dr:
 ### usage
 
 ```rust
-// clms-claim: ledger writes are append-only
-// clms-evidence: method=code-test cmd="cargo test test_append_only"
+// clms-claim: ledger writes are append-only under concurrent fsync
+// clms-evidence: method=prop-test cmd="cargo test --release ledger_append_props"
 fn append_to_ledger(...) { ... }
 ```
 
@@ -268,7 +291,9 @@ clms archaeology suggest -o candidates.json
 clms archaeology commit --from-plan survivors.json --keep 8
 
 # 4. promote each pending claim to verified when you actually run the test
-clms verify <id> --method code-test --ref <path> --exit-code 0 --cmd "..."
+#    pick the method that matches the falsification surface:
+clms verify <id> --method prop-test --ref <path> --exit-code 0 --cmd "..."
+# or integration-test --target ... / replay-test --dataset ... / stat-test --data-source real
 ```
 
 ### orchestration recipe (pi-subagents)
