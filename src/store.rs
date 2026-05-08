@@ -470,6 +470,37 @@ pub fn detect_drift(
     None
 }
 
+/// returns Some((prior_hash, prior_recorded_at_rfc3339)) if `claim` already has
+/// replay-test evidence with the same `dataset` path but a different content
+/// hash. without this check, an agent can swap the bytes of a parquet file
+/// (or any other dataset) between two `replay-test` verifies and clms records
+/// both as if the underlying data hadn't changed. detect_drift only catches
+/// drift on the ref string; this catches drift on the dataset payload.
+pub fn detect_dataset_drift(
+    claim: &Claim,
+    new_dataset: Option<&str>,
+    new_dataset_hash: &Option<String>,
+) -> Option<(String, String, String)> {
+    let new_dataset = new_dataset?;
+    let new_hash = new_dataset_hash.as_deref()?;
+    for prior in &claim.evidence {
+        let prior_ds = match prior.dataset.as_deref() {
+            Some(s) if s == new_dataset => s,
+            _ => continue,
+        };
+        if let Some(prior_hash) = &prior.dataset_hash {
+            if prior_hash != new_hash {
+                return Some((
+                    prior_ds.to_string(),
+                    prior_hash.clone(),
+                    prior.recorded_at.to_rfc3339(),
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// run a shell command, return (exit_code, stdout_bytes).
 pub fn run_cmd(cmd: &str) -> Result<(i32, Vec<u8>)> {
     let out = std::process::Command::new("sh")

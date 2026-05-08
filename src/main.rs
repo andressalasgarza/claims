@@ -15,8 +15,8 @@ use models::{Claim, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, State,
 use output::OutputFormat;
 use std::path::PathBuf;
 use store::{
-    cascade_suspect, detect_drift, hash_ref_if_local, latest_runnable_evidence, run_cmd,
-    validate_evidence, Store,
+    cascade_suspect, detect_dataset_drift, detect_drift, hash_ref_if_local,
+    latest_runnable_evidence, run_cmd, validate_evidence, Store,
 };
 use ulid::Ulid;
 
@@ -743,6 +743,23 @@ refute this one instead.",
                 &prior_hash[..16.min(prior_hash.len())],
                 prior_at,
                 ev.ref_hash.as_deref().map(|h| &h[..16.min(h.len())]).unwrap_or("-"),
+            ));
+        }
+    }
+    if let Some((ds, prior_hash, prior_at)) =
+        detect_dataset_drift(&claim, ev.dataset.as_deref(), &ev.dataset_hash)
+    {
+        if !a.acknowledge_drift {
+            return Err(anyhow!(
+                "dataset drift detected on '{}':\n  prior dataset_hash: {} (recorded {})\n  new dataset_hash:   {}\n\n\
+the replay dataset bytes have changed since prior evidence on this claim, even though the dataset path is unchanged. \
+an agent that swaps parquet/csv contents can defeat ref-string drift detection. if this iteration is intentional, \
+re-run with --acknowledge-drift. if the new bytes contradict the prior conclusion, write a new claim and refute \
+this one instead.",
+                ds,
+                &prior_hash[..16.min(prior_hash.len())],
+                prior_at,
+                ev.dataset_hash.as_deref().map(|h| &h[..16.min(h.len())]).unwrap_or("-"),
             ));
         }
     }
