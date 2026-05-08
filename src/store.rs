@@ -7,6 +7,16 @@ use std::path::{Path, PathBuf};
 pub const STORE_DIR: &str = ".claims";
 pub const INDEX_FILE: &str = "index.db";
 
+/// canonical content hash: serialize the claim with content_hash blanked,
+/// then blake3. write side captures it; read side recomputes and compares.
+fn canonical_content_hash(claim: &Claim) -> String {
+    let mut to_serialize = claim.clone();
+    to_serialize.content_hash = None;
+    let canonical = serde_json::to_string(&to_serialize)
+        .expect("Claim serializes (Serialize is derived)");
+    blake3::hash(canonical.as_bytes()).to_hex().to_string()
+}
+
 pub struct Store {
     pub root: PathBuf,
     pub conn: Connection,
@@ -31,10 +41,7 @@ impl Store {
     }
 
     pub fn write_claim(&mut self, claim: &mut Claim) -> Result<()> {
-        let mut to_serialize = claim.clone();
-        to_serialize.content_hash = None;
-        let canonical = serde_json::to_string(&to_serialize)?;
-        let hash = blake3::hash(canonical.as_bytes()).to_hex().to_string();
+        let hash = canonical_content_hash(claim);
         claim.content_hash = Some(hash);
 
         let path = self.claim_path(claim.seq);
@@ -49,11 +56,45 @@ impl Store {
         self.root.join(format!("{:06}.json", seq))
     }
 
+    /// read a claim from disk and verify its content_hash matches the canonical
+    /// blake3 of its serialized form (with content_hash blanked). hard error on
+    /// mismatch or missing hash. without this check, a hand-written
+    /// .claims/*.json with state=verified, agent=anyone, content_hash=fake passes
+    /// `clms reindex` and shows up in `clms show` as legitimate.
     pub fn read_claim(&self, seq: u64) -> Result<Claim> {
         let path = self.claim_path(seq);
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("claim #{} not found at {}", seq, path.display()))?;
         let c: Claim = serde_json::from_str(&raw)?;
+        match c.content_hash.as_deref() {
+            None => {
+                if std::env::var("CLAIMS_REPAIR").is_ok() {
+                    return Ok(c);
+                }
+                return Err(anyhow!(
+                    "claim #{} at {} has no content_hash. either it was hand-written outside `clms`, \
+or it predates the integrity field. set CLAIMS_REPAIR=1 to read anyway, then re-save with `clms reindex`.",
+                    seq,
+                    path.display(),
+                ));
+            }
+            Some(stored) => {
+                let recomputed = canonical_content_hash(&c);
+                if stored != recomputed {
+                    if std::env::var("CLAIMS_REPAIR").is_ok() {
+                        return Ok(c);
+                    }
+                    return Err(anyhow!(
+                        "claim #{} content_hash mismatch — file has been tampered.\n  stored:     {}\n  recomputed: {}\n  path:       {}\n\nthe json on disk does not match the hash it claims. someone edited the file outside `clms`. \
+set CLAIMS_REPAIR=1 to read anyway (use only if you accept the tampered content), then re-save.",
+                        seq,
+                        &stored[..16.min(stored.len())],
+                        &recomputed[..16],
+                        path.display(),
+                    ));
+                }
+            }
+        }
         Ok(c)
     }
 

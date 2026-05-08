@@ -979,7 +979,9 @@ fn cmd_suspect(store: &Store, fmt: OutputFormat, exclude_agent: &[String]) -> Re
     let seqs = store.all_seqs()?;
     let claims: Vec<Claim> = seqs
         .iter()
-        .filter_map(|s| store.read_claim(*s).ok())
+        .map(|s| store.read_claim(*s))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
         .filter(|c| c.state == State::Suspect)
         .filter(|c| !output::agent_excluded(c, exclude_agent))
         .collect();

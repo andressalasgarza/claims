@@ -255,7 +255,9 @@ fn timeline_load(store: &Store, tag: Option<&str>, exclude_agent: &[String]) -> 
     let seqs = store.all_seqs()?;
     let mut claims: Vec<Claim> = seqs
         .iter()
-        .filter_map(|s| store.read_claim(*s).ok())
+        .map(|s| store.read_claim(*s))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
         .filter(|c| match tag {
             Some(t) => c.tags.iter().any(|x| x == t),
             None => true,
@@ -329,7 +331,9 @@ pub fn render_context(
     let seqs = store.all_seqs()?;
     let claims: Vec<Claim> = seqs
         .iter()
-        .filter_map(|s| store.read_claim(*s).ok())
+        .map(|s| store.read_claim(*s))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
         .filter(|c| matches!(c.state, State::Verified))
         .filter(|c| match tag {
             Some(t) => c.tags.iter().any(|x| x == t),
