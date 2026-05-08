@@ -274,6 +274,12 @@ pub struct Evidence {
     pub ref_hash: Option<String>,
     /// shell command that produced this evidence; required for `claims rerun` to re-execute.
     pub cmd: Option<String>,
+    /// blake3 hash of `cmd` at verify time. on rerun, the stored cmd is re-hashed
+    /// and compared against this; mismatch means the json was tampered and rerun
+    /// MUST refuse to execute. closes the "plant cmd in tampered .claims/*.json,
+    /// run rerun, get arbitrary code execution" attack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd_hash: Option<String>,
     /// blake3 hash of stdout captured at verify time. drift detection on rerun.
     pub stdout_hash: Option<String>,
     /// integration-test: required. the external system probed (url/host/endpoint).

@@ -673,6 +673,10 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
         _ => None, // non-stat-test --data-source already rejected by check_exclusive_flags
     };
     let dataset_hash = a.dataset.as_deref().and_then(hash_ref_if_local);
+    let cmd_hash = a
+        .cmd
+        .as_deref()
+        .map(|c| blake3::hash(c.as_bytes()).to_hex().to_string());
     Ok(Evidence {
         method: m,
         r#ref: a.r#ref.clone(),
@@ -685,6 +689,7 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
         from_claims: a.from.clone(),
         ref_hash: hash_ref_if_local(&a.r#ref),
         cmd: a.cmd.clone(),
+        cmd_hash,
         stdout_hash: None,
         target: a.target.clone(),
         dataset: a.dataset.clone(),
@@ -750,6 +755,29 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
     let prior_target = prior.target.clone();
     let prior_dataset = prior.dataset.clone();
     let prior_data_source = prior.data_source;
+    // tamper-gate: re-hash the stored cmd and refuse to execute if the json was
+    // edited since verify time. without this check, anyone who can write to a
+    // .claims/*.json gets arbitrary code execution via `clms rerun`.
+    let recomputed_cmd_hash = blake3::hash(cmd.as_bytes()).to_hex().to_string();
+    match prior.cmd_hash.as_deref() {
+        None => {
+            return Err(anyhow!(
+                "claim #{} has runnable evidence with no cmd_hash (pre-tamper-gate format). \
+ re-verify with the current binary to record cmd_hash, then rerun.",
+                seq
+            ));
+        }
+        Some(prior_hash) if prior_hash != recomputed_cmd_hash => {
+            return Err(anyhow!(
+                "refusing to rerun: cmd has been tampered since verify time.\n  expected cmd_hash: {}\n  actual cmd_hash:   {}\n  cmd:               {:?}\n\nthe `cmd` field in the on-disk evidence record was edited after verify. \
+rerun would execute attacker-controlled shell. write a new claim instead.",
+                &prior_hash[..16.min(prior_hash.len())],
+                &recomputed_cmd_hash[..16],
+                cmd,
+            ));
+        }
+        _ => {}
+    }
     println!("rerunning: {}", cmd);
     let (exit_code, stdout) = run_cmd(&cmd)?;
     let new_ref_hash = hash_ref_if_local(&r#ref);
@@ -780,6 +808,7 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
         from_claims: vec![],
         ref_hash: new_ref_hash,
         cmd: Some(cmd),
+        cmd_hash: Some(recomputed_cmd_hash),
         stdout_hash,
         target: prior_target,
         dataset: prior_dataset,
@@ -885,6 +914,7 @@ fn refute_evidence(by: u64, reason: String) -> Evidence {
         from_claims: vec![by],
         ref_hash: None,
         cmd: None,
+        cmd_hash: None,
         stdout_hash: None,
         target: None,
         dataset: None,
