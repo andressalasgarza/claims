@@ -459,6 +459,22 @@ pub fn hash_ref_if_local(r: &str) -> Option<String> {
     }
 }
 
+/// canonical hash of an Evidence record's *user-supplied* fields. used for
+/// dedup at append time. the auto-captured fields (recorded_at, ref_hash,
+/// stdout_hash, dataset_hash, cmd_hash) are blanked before hashing so two
+/// identical user invocations collapse to the same key, but a rerun that
+/// captures a different exit_code stays distinct.
+pub fn evidence_user_hash(ev: &Evidence) -> String {
+    let mut canon = ev.clone();
+    canon.recorded_at = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap_or_else(chrono::Utc::now);
+    canon.ref_hash = None;
+    canon.stdout_hash = None;
+    canon.dataset_hash = None;
+    canon.cmd_hash = None;
+    let s = serde_json::to_string(&canon).unwrap_or_default();
+    blake3::hash(s.as_bytes()).to_hex().to_string()
+}
+
 /// returns Some((prior_hash, prior_recorded_at_rfc3339)) if `claim` already has
 /// evidence pointing at the same ref path with a different content hash.
 pub fn detect_drift(

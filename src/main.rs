@@ -15,8 +15,8 @@ use models::{Claim, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, State,
 use output::OutputFormat;
 use std::path::PathBuf;
 use store::{
-    cascade_suspect, detect_dataset_drift, detect_drift, hash_ref_if_local,
-    latest_runnable_evidence, run_cmd, validate_evidence, Store,
+    cascade_suspect, detect_dataset_drift, detect_drift, evidence_user_hash,
+    hash_ref_if_local, latest_runnable_evidence, run_cmd, validate_evidence, Store,
 };
 use ulid::Ulid;
 
@@ -762,6 +762,20 @@ this one instead.",
                 ev.dataset_hash.as_deref().map(|h| &h[..16.min(h.len())]).unwrap_or("-"),
             ));
         }
+    }
+    // dedup: if the user-supplied evidence fields collide with an existing
+    // entry, refuse. otherwise an agent can stack 5x identical `verify` calls
+    // and inflate the apparent evidence count for free.
+    let new_user_hash = evidence_user_hash(&ev);
+    if claim
+        .evidence
+        .iter()
+        .any(|prior| evidence_user_hash(prior) == new_user_hash)
+    {
+        return Err(anyhow!(
+            "duplicate evidence: claim #{} already has an entry with the same method, ref, and parameters. add new information (a different ref, exit_code, target, dataset, etc.) or write a new claim.",
+            seq
+        ));
     }
     claim.evidence.push(ev);
     claim.state = State::Verified;
