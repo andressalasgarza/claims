@@ -1,0 +1,80 @@
+=== refused: unit-test ===
++ target/release/clms verify 1 --method=unit-test --cmd=echo --exit-code=0 --ref=x
+exit=1
+Error: method 'unit-test' is not a valid evidence method. unit tests are confirmatory by construction (you pick the input and the expected output, so the test cannot disagree with you). use 'prop-test' for randomized input exploration, 'integration-test' for real external systems, 'replay-test' for frozen real-world data, or 'observed' for a captured artifact.
+
+=== refused: code-test ===
++ target/release/clms verify 1 --method=code-test --cmd=echo --exit-code=0 --ref=x
+exit=1
+Error: method 'code-test' was removed in schema 1.1. it conflated unit/integration/replay/property tests under one tier. pick one of: prop-test | integration-test | replay-test. see `clms verify --help`.
+
+=== refused: sim-test ===
++ target/release/clms verify 1 --method=sim-test --cmd=echo --exit-code=0 --ref=x
+exit=1
+Error: method 'sim-test' is not a valid evidence method. running a stat-test on synthetic data only proves your simulator behaves like your simulator (circular). either capture real data and use 'stat-test --data-source=real', or file the result as 'derived' citing the simulator's underlying claims.
+
+=== unknown: bogus-method ===
++ target/release/clms verify 1 --method=bogus-method --cmd=echo --exit-code=0 --ref=x
+exit=1
+Error: invalid method 'bogus-method'. valid: prop-test|integration-test|replay-test|stat-test|observed|documented|derived
+
+=== cross-flag: --target on prop-test ===
++ target/release/clms verify 1 --method=prop-test --cmd=echo --exit-code=0 --ref=x --target=https://api.example.com
+exit=1
+Error: --target is only valid with --method integration-test (got --method prop-test)
+
+=== cross-flag: --dataset on prop-test ===
++ target/release/clms verify 1 --method=prop-test --cmd=echo --exit-code=0 --ref=x --dataset=data.csv
+exit=1
+Error: --dataset is only valid with --method replay-test (got --method prop-test)
+
+=== cross-flag: --data-source on prop-test ===
++ target/release/clms verify 1 --method=prop-test --cmd=echo --exit-code=0 --ref=x --data-source=real
+exit=1
+Error: --data-source is only valid with --method stat-test (got --method prop-test)
+
+=== simulated rejected on stat-test ===
++ target/release/clms verify 1 --method=stat-test --cmd=echo --exit-code=0 --ref=x --data-source=simulated
+exit=1
+Error: data-source 'simulated' refused. simulated/synthetic data cannot falsify a claim about reality. either capture real data and use --data-source=real, or file the claim with --method=derived and cite the simulator's underlying claims.
+
+=== prop-test missing --cmd ===
++ target/release/clms verify 1 --method=prop-test --exit-code=0 --ref=x
+exit=1
+Error: prop-test requires --cmd "<shell cmd that ran the proptest/quickcheck/fuzz>". the cmd must be re-runnable for falsification audit.
+
+=== integration-test missing --target ===
++ target/release/clms verify 1 --method=integration-test --cmd=echo --exit-code=0 --ref=x
+exit=1
+Error: integration-test requires --target <url-or-host>. the test must hit a real external system the author does not control; without --target the falsification surface is undocumented.
+
+=== replay-test missing --dataset ===
++ target/release/clms verify 1 --method=replay-test --cmd=echo --exit-code=0 --ref=x
+exit=1
+Error: replay-test requires --dataset <path>. the dataset must be real-world capture (not synthetic); it is content-hashed for tamper-evidence.
+
+=== stat-test missing --data-source ===
++ target/release/clms verify 1 --method=stat-test --cmd=echo --exit-code=0 --ref=x
+exit=1
+Error: stat-test requires --p-value <float>
+
+=== documented missing --quote ===
++ target/release/clms verify 1 --method=documented --ref=x
+exit=1
+Error: documented requires --quote "<exact text from doc>"
+
+=== observed missing --ref ===
++ target/release/clms verify 1 --method=observed
+exit=2
+error: the following required arguments were not provided:
+  --ref <REF>
+
+Usage: clms verify --method <METHOD> --ref <REF> <ID>
+
+For more information, try '--help'.
+
+=== derived missing --from ===
++ target/release/clms verify 1 --method=derived --ref=x
+exit=1
+Error: derived requires at least two --from <claim_id> entries
+
