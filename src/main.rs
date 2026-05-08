@@ -604,6 +604,26 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
             return Err(anyhow!("referenced claim #{} does not exist", d));
         }
     }
+    // backfill gate: --created-at and --git-sha forge provenance metadata.
+    // they are documented for archaeology workflows but were exposed on every
+    // `clms add`, allowing any agent to stamp a claim with arbitrary git_sha
+    // and created_at (e.g., year 9999, deadbeef..., a colleague's actual sha).
+    // require CLAIMS_BACKFILL=1 to use them. archaeology constructs claims
+    // directly via the Claim struct, not via cmd_add, so it is unaffected.
+    let backfill_authorized = std::env::var("CLAIMS_BACKFILL").is_ok();
+    if (a.created_at_override.is_some() || a.git_sha_override.is_some()) && !backfill_authorized {
+        let mut flags = Vec::new();
+        if a.created_at_override.is_some() {
+            flags.push("--created-at");
+        }
+        if a.git_sha_override.is_some() {
+            flags.push("--git-sha");
+        }
+        return Err(anyhow!(
+            "refusing to backfill provenance: {} requires CLAIMS_BACKFILL=1.\n\nthese flags forge git_sha and created_at; they are intended for archaeology / historical reconstruction only. set CLAIMS_BACKFILL=1 in the environment to authorize, then re-run.",
+            flags.join(" + "),
+        ));
+    }
     let stamp_at = match a.created_at_override.as_deref() {
         Some(s) => parse_created_at(s)?,
         None => Utc::now(),
