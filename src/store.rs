@@ -204,7 +204,7 @@ set CLAIMS_REPAIR=1 to read anyway (use only if you accept the tampered content)
 /// dispatch to per-method validator. behavior preserved exactly; the only
 /// change vs pre-refactor is that each per-method block is now its own fn,
 /// so cyclomatic complexity is bounded per validator instead of stacking.
-pub fn validate_evidence(ev: &Evidence) -> Result<()> {
+pub fn validate_evidence(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()> {
     use crate::models::EvidenceMethod::*;
     match ev.method {
         PropTest => validate_prop_test(ev),
@@ -213,7 +213,7 @@ pub fn validate_evidence(ev: &Evidence) -> Result<()> {
         StatTest => validate_stat_test(ev),
         Observed => validate_observed(ev),
         Documented => validate_documented(ev),
-        Derived => validate_derived(ev),
+        Derived => validate_derived(ev, store, current_seq),
     }
 }
 
@@ -331,11 +331,54 @@ fn validate_documented(ev: &Evidence) -> Result<()> {
     Ok(())
 }
 
-fn validate_derived(ev: &Evidence) -> Result<()> {
+/// derived parent validation. before this commit, the only check was
+/// `from_claims.len() >= 2`. that left several trivial bypasses in production:
+/// same id twice, non-existent parents, unverified parents (PENDING),
+/// refuted parents, and self-derivation (cite yourself to verify yourself).
+/// all now refuse with specific messages. derived must compose only over
+/// claims that have actually crossed the falsifiability bar.
+fn validate_derived(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()> {
     if ev.from_claims.len() < 2 {
         return Err(anyhow!(
             "derived requires at least two --from <claim_id> entries"
         ));
+    }
+
+    // self-derivation
+    if ev.from_claims.contains(&current_seq) {
+        return Err(anyhow!(
+            "derived: claim #{} cannot cite itself in --from. self-derivation is circular.",
+            current_seq
+        ));
+    }
+
+    // dedup
+    let mut seen = std::collections::HashSet::new();
+    for id in &ev.from_claims {
+        if !seen.insert(*id) {
+            return Err(anyhow!(
+                "derived: --from #{} listed twice. each parent claim must be unique.",
+                id
+            ));
+        }
+    }
+
+    // every parent must exist and be verified
+    for id in &ev.from_claims {
+        let parent = store.read_claim(*id).map_err(|_| {
+            anyhow!(
+                "derived: --from #{} does not exist. cannot derive from a non-existent claim.",
+                id
+            )
+        })?;
+        if !matches!(parent.state, State::Verified) {
+            return Err(anyhow!(
+                "derived: --from #{} is {} (not verified). derived claims must compose only over verified parents — deriving from {} is unsound.",
+                id,
+                parent.state.as_str(),
+                parent.state.as_str()
+            ));
+        }
     }
     Ok(())
 }

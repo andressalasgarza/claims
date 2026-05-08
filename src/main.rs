@@ -710,7 +710,7 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
     }
     let m = EvidenceMethod::parse(&a.method)?;
     let ev = build_evidence(&a, m)?;
-    validate_evidence(&ev)?;
+    validate_evidence(&ev, store, seq)?;
     if let Some((prior_hash, prior_at)) = detect_drift(&claim, &ev.r#ref, &ev.ref_hash) {
         if !a.acknowledge_drift {
             return Err(anyhow!(
