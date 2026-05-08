@@ -1010,8 +1010,22 @@ fn render_cascade_note(store: &mut Store, seq: u64, cascade: bool) -> Result<Str
 
 fn cmd_refute(store: &mut Store, a: RefuteArgs, fmt: OutputFormat) -> Result<()> {
     let seq = store.resolve(&a.id)?;
+    if a.by == seq {
+        return Err(anyhow!(
+            "refute: claim #{} cannot refute itself. self-refutation is incoherent — if the claim is wrong, write a different claim that contradicts it and refute via that.",
+            seq
+        ));
+    }
     let mut claim = store.read_claim(seq)?;
-    let _replacement = store.read_claim(a.by)?;
+    let replacement = store.read_claim(a.by)?;
+    if !matches!(replacement.state, State::Verified) {
+        return Err(anyhow!(
+            "refute: --by #{} is {} (not verified). a refutation must replace a claim with a verified counter-claim. either verify #{} first or write a different replacement.",
+            a.by,
+            replacement.state.as_str(),
+            a.by
+        ));
+    }
     claim.state = State::Refuted;
     claim.edges.push(Edge {
         r#type: EdgeType::Refutes,
