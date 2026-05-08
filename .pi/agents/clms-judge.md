@@ -34,15 +34,31 @@ articulate, in ≤80 tokens of `rationale` per survivor:
    security? if "no one specific," vote drop)
 2. **what** would change in their behavior if the claim flipped to false
 3. **why** this is monitorable as an *invariant*, not a one-time fact
+4. **how** the claim could be falsified — name a falsifiable evidence method
+   (`prop-test`, `integration-test`, `replay-test`, `stat-test`, `observed`,
+   `documented`, or `derived`) and identify the falsification surface
+   (random generator? real external system? frozen real dataset? real
+   samples? captured artifact? primary-source quote? upstream claims?).
+   if the only plausible verification is a hand-picked single-input single-
+   output assertion ("unit test"), vote drop. clms refuses unit-test,
+   code-test, and sim-test methods at promotion time, so survivors that
+   can't be re-cast as a falsifiable method will block `clms verify`.
 
 If you find yourself arguing "this seems true and falsifiable," that is NOT
-sufficient. Many true falsifiable facts are not claims. Stake is the test.
+sufficient. Many true falsifiable facts are not claims. Stake AND a real
+falsification surface are both required.
 
 ## cross-comparison
 
 You see all N candidates simultaneously — use that. If two are subsumed by
 one, keep the parent and drop the children. If a candidate is better-tracked
 elsewhere (type system, CI assertion, lint rule, existing test), drop it.
+
+Note: "better-tracked by an existing unit test" is *not* a reason to keep —
+clms's empirical tier is reserved for falsifiable evidence (prop/integration
+/replay/stat). a unit test passing in CI does not falsify anything; it just
+confirms the author wrote consistent code. surviving candidates must have a
+path to a real falsification surface or they don't belong in the ledger.
 
 ## budget
 
@@ -119,3 +135,17 @@ the cut rationale.
 - "this is good documentation" → docs aren't claims, drop
 - "this asserts the api is stable" → only keep if "stable" is concretely
   defined (exact symbol set, exact signatures); generic stability is fluff
+- **only-unit-testable** → if the only plausible verification is
+  `assert_eq!(f(specific_input), specific_output)`, the claim is
+  confirmatory by construction — the test cannot disagree because the
+  author picked both sides. drop unless the candidate can be re-stated as
+  a property over an input space (prop-test) or against a real external
+  system / real dataset (integration-test, replay-test, stat-test).
+- **simulator-validated** → a stat-test on synthetic data only proves the
+  simulator behaves like itself. drop unless the candidate cites a real
+  dataset or live measurement.
+- **suggested_evidence.method == unit-test | code-test | sim-test** → these
+  methods are refused at parse time by `clms verify`. survivors will fail
+  promotion. either drop, or note in your rationale that the surviving
+  evidence method must be one of the falsifiable seven (prop-test,
+  integration-test, replay-test, stat-test, observed, documented, derived).

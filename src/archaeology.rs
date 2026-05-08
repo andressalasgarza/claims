@@ -131,70 +131,101 @@ fn cmd_suggest(args: SuggestArgs, fmt: OutputFormat) -> Result<()> {
     let sources_enabled = filter_sources(&args.source)?;
     let root = std::env::current_dir().context("get cwd")?;
 
-    let mut all = harvest_annotations(&root)?;
-    let proposals_count = {
-        let proposals = harvest_proposals(&root)?;
-        let n = proposals.len();
-        all.extend(proposals);
-        n
-    };
+    let (mut all, proposals_count) = harvest_all(&root)?;
+    let actual = all.len();
+    let truncated = actual.saturating_sub(max);
+    all.truncate(max);
+
+    let payload = build_suggest_payload(
+        &all, max, actual, truncated, &sources_enabled, proposals_count,
+    );
+    emit_suggest_output(&payload, fmt, args.output, actual, truncated)
+}
+
+/// runs both intent surfaces (in-source annotations + proposals.json),
+/// dedups by candidate_id, and sorts chronologically (oldest first).
+///
+/// chronological-first is the staking mechanism: claims earn stake by
+/// surviving subsequent edits. an annotation that has lived through three
+/// years of refactors has demonstrated stake that yesterday's hasn't.
+/// candidates without a resolvable timestamp (uncommitted, missing repo)
+/// sort to the end as "effectively newest." file:line is the tiebreak.
+///
+/// returns (all_candidates, proposals_count_after_dedup).
+fn harvest_all(root: &Path) -> Result<(Vec<Candidate>, usize)> {
+    let mut all = harvest_annotations(root)?;
+    let proposals = harvest_proposals(root)?;
+    let proposals_added = proposals.len();
+    all.extend(proposals);
+
     // dedup by candidate_id (proposal can shadow an existing source annotation
     // if both encode the same kind|text|where; keep first occurrence)
     let mut seen: HashSet<String> = HashSet::new();
     all.retain(|c| seen.insert(c.id.clone()));
-    // chronological ordering: oldest first. claims earn their stake by
-    // surviving subsequent edits; an annotation that's lived through three
-    // years of refactors has demonstrated stake that yesterday's hasn't.
-    // candidates without a resolvable timestamp (uncommitted, missing repo)
-    // sort to the end as "effectively newest." file:line is the tiebreak.
-    all.sort_by(|a, b| {
-        match (&a.created_at, &b.created_at) {
-            (Some(x), Some(y)) => x
-                .cmp(y)
-                .then_with(|| (&a.source_meta.file, a.source_meta.line).cmp(&(&b.source_meta.file, b.source_meta.line))),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => (&a.source_meta.file, a.source_meta.line)
-                .cmp(&(&b.source_meta.file, b.source_meta.line)),
-        }
-    });
-    let actual = all.len();
-    let truncated = if all.len() > max { all.len() - max } else { 0 };
-    all.truncate(max);
 
-    let payload = serde_json::json!({
+    all.sort_by(|a, b| candidate_chronological_order(a, b));
+
+    Ok((all, proposals_added))
+}
+
+fn candidate_chronological_order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
+    let tiebreak = (&a.source_meta.file, a.source_meta.line)
+        .cmp(&(&b.source_meta.file, b.source_meta.line));
+    match (&a.created_at, &b.created_at) {
+        (Some(x), Some(y)) => x.cmp(y).then(tiebreak),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => tiebreak,
+    }
+}
+
+fn build_suggest_payload(
+    candidates: &[Candidate],
+    max: usize,
+    actual: usize,
+    truncated: usize,
+    sources_enabled: &[String],
+    proposals_count: usize,
+) -> serde_json::Value {
+    serde_json::json!({
         "version": SCHEMA_VERSION,
         "generated_at": Utc::now().to_rfc3339(),
         "harvester": {
             "max": max,
-            "actual": all.len(),
+            "actual": candidates.len(),
             "extracted_total": actual,
             "truncated": truncated,
             "sources_enabled": sources_enabled,
             "from_source": actual - proposals_count,
             "from_proposals": proposals_count,
         },
-        "candidates": all,
-    });
+        "candidates": candidates,
+    })
+}
 
+fn emit_suggest_output(
+    payload: &serde_json::Value,
+    fmt: OutputFormat,
+    output: Option<PathBuf>,
+    actual: usize,
+    truncated: usize,
+) -> Result<()> {
     let serialized = if matches!(fmt, OutputFormat::Ai) {
-        serde_json::to_string(&payload)?
+        serde_json::to_string(payload)?
     } else {
-        serde_json::to_string_pretty(&payload)?
+        serde_json::to_string_pretty(payload)?
     };
-
-    match args.output {
-        Some(path) => {
-            fs::write(&path, &serialized)
-                .with_context(|| format!("write {}", path.display()))?;
-            if !matches!(fmt, OutputFormat::Ai) {
-                eprintln!(
-                    "wrote {} candidates to {} (extracted {}, truncated {})",
-                    payload["harvester"]["actual"], path.display(), actual, truncated
-                );
-            }
-        }
-        None => println!("{}", serialized),
+    let Some(path) = output else {
+        println!("{}", serialized);
+        return Ok(());
+    };
+    fs::write(&path, &serialized)
+        .with_context(|| format!("write {}", path.display()))?;
+    if !matches!(fmt, OutputFormat::Ai) {
+        eprintln!(
+            "wrote {} candidates to {} (extracted {}, truncated {})",
+            payload["harvester"]["actual"], path.display(), actual, truncated
+        );
     }
     Ok(())
 }
@@ -257,14 +288,29 @@ fn harvest_annotations(root: &Path) -> Result<Vec<Candidate>> {
 // origin via source_meta.file (== ".archaeology/proposals.json").
 fn harvest_proposals(root: &Path) -> Result<Vec<Candidate>> {
     let path = root.join(".archaeology/proposals.json");
-    if !path.exists() {
+    let Some(arr) = load_proposals_manifest(&path)? else {
         return Ok(Vec::new());
+    };
+    let manifest_mtime = git::file_mtime(&path);
+    let mut out = Vec::new();
+    for (idx, row) in arr.iter().enumerate() {
+        if let Some(c) = parse_proposal_row(&path, idx, row, manifest_mtime)? {
+            out.push(c);
+        }
     }
-    let raw = fs::read_to_string(&path)
+    Ok(out)
+}
+
+/// reads + parses + version-checks proposals.json. returns Ok(None) if the
+/// manifest does not exist (the cold-start case is benign).
+fn load_proposals_manifest(path: &Path) -> Result<Option<Vec<serde_json::Value>>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(path)
         .with_context(|| format!("read {}", path.display()))?;
     let v: serde_json::Value = serde_json::from_str(&raw)
         .with_context(|| format!("parse {}", path.display()))?;
-
     let version = v["version"].as_str().unwrap_or("");
     if version != SCHEMA_VERSION {
         bail!(
@@ -274,68 +320,76 @@ fn harvest_proposals(root: &Path) -> Result<Vec<Candidate>> {
     }
     let arr = v["proposals"]
         .as_array()
-        .ok_or_else(|| anyhow!("{}: 'proposals' must be an array", path.display()))?;
+        .ok_or_else(|| anyhow!("{}: 'proposals' must be an array", path.display()))?
+        .clone();
+    Ok(Some(arr))
+}
 
-    let manifest_rel = ".archaeology/proposals.json";
-    let manifest_mtime = git::file_mtime(&path);
-    let mut out = Vec::new();
-    for (idx, row) in arr.iter().enumerate() {
-        let text = row["text"]
-            .as_str()
-            .ok_or_else(|| anyhow!("{}: proposals[{}].text missing", path.display(), idx))?
-            .trim()
-            .to_string();
-        if text.is_empty() {
-            continue;
-        }
-        let where_str = row["where"]
-            .as_str()
-            .ok_or_else(|| anyhow!("{}: proposals[{}].where missing", path.display(), idx))?
-            .to_string();
-        let snippet = row["snippet"]
-            .as_str()
-            .map(String::from)
-            .unwrap_or_else(|| format!("// (proposal) clms-claim: {}", text));
-        let mut suggested_evidence = Vec::new();
-        if let Some(ev_arr) = row["suggested_evidence"].as_array() {
-            for ev in ev_arr {
-                let method = ev["method"].as_str().unwrap_or("").to_string();
-                if method.is_empty() {
-                    continue;
-                }
-                suggested_evidence.push(SuggestedEvidence {
-                    method,
-                    cmd: ev["cmd"].as_str().map(String::from),
-                    r#ref: ev["ref"].as_str().map(String::from),
-                    note: ev["note"]
-                        .as_str()
-                        .unwrap_or("advisory only; not run by archaeology. promotion via `clms verify`")
-                        .to_string(),
-                });
-            }
-        }
-        let id = candidate_id("clms-claim-annotation", &text, &where_str);
-        // proposals don't live in git history; date them by manifest mtime
-        // (filled once per call below). this puts agent proposals on a
-        // comparable timeline as source-blame timestamps.
-        out.push(Candidate {
-            id,
-            kind: "clms-claim-annotation".into(),
-            text,
-            stake_signal: StakeSignal {
-                r#where: where_str,
-                snippet,
-            },
-            suggested_evidence,
-            source_meta: SourceMeta {
-                file: manifest_rel.to_string(),
-                line: (idx as u32) + 1,
-            },
-            created_at: manifest_mtime,
-            debate: None,
-        });
+/// parses one row from proposals.json. returns Ok(None) for empty-text rows
+/// (silently skipped, not an error).
+fn parse_proposal_row(
+    path: &Path,
+    idx: usize,
+    row: &serde_json::Value,
+    manifest_mtime: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Option<Candidate>> {
+    let text = row["text"]
+        .as_str()
+        .ok_or_else(|| anyhow!("{}: proposals[{}].text missing", path.display(), idx))?
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Ok(None);
     }
-    Ok(out)
+    let where_str = row["where"]
+        .as_str()
+        .ok_or_else(|| anyhow!("{}: proposals[{}].where missing", path.display(), idx))?
+        .to_string();
+    let snippet = row["snippet"]
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| format!("// (proposal) clms-claim: {}", text));
+    let suggested_evidence = parse_suggested_evidence(row.get("suggested_evidence"));
+    let id = candidate_id("clms-claim-annotation", &text, &where_str);
+    // proposals don't live in git history; date them by manifest mtime so
+    // agent proposals sit on a comparable timeline w/ source-blame timestamps.
+    Ok(Some(Candidate {
+        id,
+        kind: "clms-claim-annotation".into(),
+        text,
+        stake_signal: StakeSignal { r#where: where_str, snippet },
+        suggested_evidence,
+        source_meta: SourceMeta {
+            file: ".archaeology/proposals.json".to_string(),
+            line: (idx as u32) + 1,
+        },
+        created_at: manifest_mtime,
+        debate: None,
+    }))
+}
+
+fn parse_suggested_evidence(arr: Option<&serde_json::Value>) -> Vec<SuggestedEvidence> {
+    let Some(items) = arr.and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|ev| {
+            let method = ev["method"].as_str()?.trim();
+            if method.is_empty() {
+                return None;
+            }
+            Some(SuggestedEvidence {
+                method: method.to_string(),
+                cmd: ev["cmd"].as_str().map(String::from),
+                r#ref: ev["ref"].as_str().map(String::from),
+                note: ev["note"]
+                    .as_str()
+                    .unwrap_or("advisory only; not run by archaeology. promotion via `clms verify`")
+                    .to_string(),
+            })
+        })
+        .collect()
 }
 
 fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -509,12 +563,7 @@ fn cmd_commit(store: &mut Store, args: CommitArgs, fmt: OutputFormat) -> Result<
     if args.keep == 0 {
         bail!("--keep must be > 0");
     }
-    let raw = fs::read_to_string(&args.from_plan)
-        .with_context(|| format!("read survivors plan {}", args.from_plan.display()))?;
-    let plan: serde_json::Value =
-        serde_json::from_str(&raw).context("survivors.json is not valid JSON")?;
-
-    validate_plan(&plan, args.keep)?;
+    let plan = load_and_validate_plan(&args.from_plan, args.keep)?;
     let session = format!("backfill-{}", Utc::now().to_rfc3339());
     let archaeology_dir = PathBuf::from(".archaeology").join(&session);
     fs::create_dir_all(&archaeology_dir)
@@ -525,10 +574,39 @@ fn cmd_commit(store: &mut Store, args: CommitArgs, fmt: OutputFormat) -> Result<
         .as_array()
         .ok_or_else(|| anyhow!("survivors.json: 'candidates' must be an array"))?;
 
-    let mut written = 0usize;
-    let mut skipped = 0usize;
-    let mut written_summary: Vec<serde_json::Value> = Vec::new();
+    let outcome = process_candidates(
+        store, candidates, &session, &archaeology_dir, &existing_ids,
+    )?;
 
+    emit_commit_report(fmt, &session, &archaeology_dir, &outcome, args.keep)
+}
+
+/// reads survivors.json from disk, parses it, and runs `validate_plan`.
+fn load_and_validate_plan(path: &Path, keep: usize) -> Result<serde_json::Value> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read survivors plan {}", path.display()))?;
+    let plan: serde_json::Value =
+        serde_json::from_str(&raw).context("survivors.json is not valid JSON")?;
+    validate_plan(&plan, keep)?;
+    Ok(plan)
+}
+
+struct CommitOutcome {
+    written: usize,
+    skipped: usize,
+    summary: Vec<serde_json::Value>,
+}
+
+/// iterates kept candidates, builds + writes pending claims, accumulates a
+/// per-claim summary. idempotent on candidate_id collision.
+fn process_candidates(
+    store: &mut Store,
+    candidates: &[serde_json::Value],
+    session: &str,
+    archaeology_dir: &Path,
+    existing_ids: &HashSet<String>,
+) -> Result<CommitOutcome> {
+    let mut out = CommitOutcome { written: 0, skipped: 0, summary: Vec::new() };
     for c in candidates {
         if !c["keep"].as_bool().unwrap_or(false) {
             continue;
@@ -538,36 +616,45 @@ fn cmd_commit(store: &mut Store, args: CommitArgs, fmt: OutputFormat) -> Result<
             .ok_or_else(|| anyhow!("candidate missing id"))?
             .to_string();
         if existing_ids.contains(&cid) {
-            skipped += 1;
+            out.skipped += 1;
             continue;
         }
-        let claim = build_pending_claim(store, c, &session, &archaeology_dir)?;
+        let claim = build_pending_claim(store, c, session, archaeology_dir)?;
         store.write_claim(&mut claim_mut(claim))?;
-        written += 1;
-        written_summary.push(serde_json::json!({
+        out.written += 1;
+        out.summary.push(serde_json::json!({
             "candidate_id": cid,
             "text": c["text"],
         }));
     }
+    Ok(out)
+}
 
+fn emit_commit_report(
+    fmt: OutputFormat,
+    session: &str,
+    archaeology_dir: &Path,
+    outcome: &CommitOutcome,
+    keep_cap: usize,
+) -> Result<()> {
     let report = serde_json::json!({
         "agent": AGENT,
         "session": session,
         "transcript_dir": archaeology_dir.display().to_string(),
-        "written": written,
-        "skipped_idempotent": skipped,
-        "keep_cap": args.keep,
-        "claims": written_summary,
+        "written": outcome.written,
+        "skipped_idempotent": outcome.skipped,
+        "keep_cap": keep_cap,
+        "claims": outcome.summary,
     });
     if matches!(fmt, OutputFormat::Ai) {
         println!("{}", serde_json::to_string(&report)?);
-    } else {
-        println!(
-            "archaeology commit: session={} written={} skipped_idempotent={} (cap K={})",
-            session, written, skipped, args.keep
-        );
-        println!("transcripts: {}", archaeology_dir.display());
+        return Ok(());
     }
+    println!(
+        "archaeology commit: session={} written={} skipped_idempotent={} (cap K={})",
+        session, outcome.written, outcome.skipped, keep_cap
+    );
+    println!("transcripts: {}", archaeology_dir.display());
     Ok(())
 }
 
