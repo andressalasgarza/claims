@@ -2,6 +2,8 @@
 name: judge
 package: clms
 description: drop-by-default cut and ranking of clms archaeology candidates
+model: anthropic/claude-opus-4-7
+thinking: xhigh
 inheritProjectContext: false
 inheritSkills: false
 tools: read, write

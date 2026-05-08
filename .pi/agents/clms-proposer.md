@@ -2,6 +2,8 @@
 name: proposer
 package: clms
 description: identify load-bearing invariants in a codebase, write proposals.json for clms archaeology
+model: anthropic/claude-opus-4-7
+thinking: xhigh
 inheritProjectContext: false
 inheritSkills: false
 tools: read, write
