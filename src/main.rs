@@ -755,6 +755,7 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
     let prior_target = prior.target.clone();
     let prior_dataset = prior.dataset.clone();
     let prior_data_source = prior.data_source;
+    let prior_exit = prior.exit_code;
     // tamper-gate: re-hash the stored cmd and refuse to execute if the json was
     // edited since verify time. without this check, anyone who can write to a
     // .claims/*.json gets arbitrary code execution via `clms rerun`.
@@ -818,6 +819,27 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
     };
     claim.evidence.push(ev);
     claim.updated_at = Utc::now();
+
+    // contradiction-gate: if the rerun exit_code disagrees with what was
+    // recorded at verify time, the claim's verified status is now suspect.
+    // record the new evidence (audit trail), flip state, write, then exit 1.
+    // without this, an agent can lie `--exit-code 0` on a script that exits
+    // 1, and `rerun` faithfully captures exit=1 but the claim stays verified.
+    let contradicted = match (prior_exit, exit_code) {
+        (Some(prev), now) if prev != now => Some((prev, now)),
+        _ => None,
+    };
+    if let Some((prev, now)) = contradicted {
+        if matches!(claim.state, State::Verified | State::Pending) {
+            claim.state = State::Suspect;
+        }
+        store.write_claim(&mut claim)?;
+        print!("{}", output::render_claim(&claim, store, fmt)?);
+        return Err(anyhow!(
+            "rerun contradicts prior evidence on claim #{}: stored exit_code={}, fresh exit_code={}.\nclaim flipped to suspect. write a new claim and refute this one if the contradiction is real, or investigate the rerun environment if it is spurious.",
+            seq, prev, now,
+        ));
+    }
     store.write_claim(&mut claim)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);
     Ok(())
