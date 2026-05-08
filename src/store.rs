@@ -293,11 +293,21 @@ fn validate_stat_test(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
         return Err(anyhow!("stat-test requires --ref <path>"));
     }
-    if ev.p_value.is_none() {
-        return Err(anyhow!("stat-test requires --p-value <float>"));
+    let p = ev.p_value.ok_or_else(|| anyhow!("stat-test requires --p-value <float>"))?;
+    if !(0.0..=1.0).contains(&p) || p.is_nan() {
+        return Err(anyhow!(
+            "stat-test --p-value must be in [0.0, 1.0] (got {}). a p-value is a probability — outside that range it is not a p-value.",
+            p
+        ));
     }
-    if ev.sample_size.is_none() {
-        return Err(anyhow!("stat-test requires --sample-size <int>"));
+    let n = ev
+        .sample_size
+        .ok_or_else(|| anyhow!("stat-test requires --sample-size <int>"))?;
+    if n < 2 {
+        return Err(anyhow!(
+            "stat-test --sample-size must be >= 2 (got {}). a single sample (or zero) cannot falsify a distributional claim.",
+            n
+        ));
     }
     if ev.test_type.is_none() {
         return Err(anyhow!(
