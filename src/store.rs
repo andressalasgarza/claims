@@ -391,17 +391,30 @@ pub fn latest_runnable_evidence(claim: &Claim) -> Option<&Evidence> {
         .find(|e| e.cmd.is_some() && e.method.is_runnable())
 }
 
+/// flip transitive dependents of `seq` from Verified|Pending to Suspect.
+/// returns the seqs that were actually flipped (not all dependents). callers
+/// rely on the returned vec to render an honest cascade message; previously
+/// this returned every dependent regardless of whether it changed state, which
+/// caused `clms refute --cascade` to lie:
+///
+///   cascade: 1 dependent claim(s) auto-flagged suspect: [42]
+///
+/// where claim 42 was Unverifiable and stayed Unverifiable. the message
+/// claimed an action that did not happen. now the message reports only
+/// claims whose state actually changed.
 pub fn cascade_suspect(store: &mut Store, seq: u64) -> Result<Vec<u64>> {
     let dependents = store.transitive_dependents(seq)?;
+    let mut flipped = Vec::new();
     for dep in &dependents {
         let mut c = store.read_claim(*dep)?;
-        if c.state == State::Verified || c.state == State::Pending {
+        if matches!(c.state, State::Verified | State::Pending) {
             c.state = State::Suspect;
             c.updated_at = chrono::Utc::now();
             store.write_claim(&mut c)?;
+            flipped.push(*dep);
         }
     }
-    Ok(dependents)
+    Ok(flipped)
 }
 
 const SCHEMA: &str = r#"
