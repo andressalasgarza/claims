@@ -139,14 +139,14 @@ struct SuggestArgs {
     source: Vec<String>,
     /// write candidates.json to this path (default: stdout)
     #[arg(long, short = 'o')]
-    output: Option<std::path::PathBuf>,
+    output: Option<PathBuf>,
 }
 
 #[derive(Args)]
 struct CommitArgs {
     /// path to survivors.json from the debate phase
     #[arg(long = "from-plan")]
-    from_plan: std::path::PathBuf,
+    from_plan: PathBuf,
     /// cap on committed claims (default 8)
     #[arg(long, default_value_t = 8)]
     keep: usize,
@@ -456,8 +456,8 @@ const JUDGE_AGENT_MD: &str = include_str!("../.pi/agents/clms-judge.md");
 const PROPOSER_AGENT_MD: &str = include_str!("../.pi/agents/clms-proposer.md");
 
 struct AgentInstallSpec {
-    agents_dir: std::path::PathBuf,
-    targets: Vec<(std::path::PathBuf, &'static str, &'static str)>,
+    agents_dir: PathBuf,
+    targets: Vec<(PathBuf, &'static str, &'static str)>,
 }
 
 struct AgentInstallReport {
@@ -477,7 +477,7 @@ fn cmd_install_agents(fmt: OutputFormat, force: bool, dry_run: bool) -> Result<(
 
 fn resolve_agent_install_spec() -> Result<AgentInstallSpec> {
     let home = std::env::var("HOME").map_err(|_| anyhow!("HOME not set"))?;
-    let agents_dir = std::path::PathBuf::from(&home).join(".pi/agent/agents/clms");
+    let agents_dir = PathBuf::from(&home).join(".pi/agent/agents/clms");
     let judge_path = agents_dir.join("judge.md");
     let proposer_path = agents_dir.join("proposer.md");
     Ok(AgentInstallSpec {
@@ -945,23 +945,13 @@ fn cmd_show(store: &Store, id: String, fmt: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
-    if exclude.is_empty() {
-        return false;
-    }
-    match &c.agent {
-        Some(a) => exclude.iter().any(|e| e == a),
-        None => false,
-    }
-}
-
 fn cmd_suspect(store: &Store, fmt: OutputFormat, exclude_agent: &[String]) -> Result<()> {
     let seqs = store.all_seqs()?;
     let claims: Vec<Claim> = seqs
         .iter()
         .filter_map(|s| store.read_claim(*s).ok())
         .filter(|c| c.state == State::Suspect)
-        .filter(|c| !agent_excluded(c, exclude_agent))
+        .filter(|c| !output::agent_excluded(c, exclude_agent))
         .collect();
     if matches!(fmt, OutputFormat::Ai) {
         let arr: Vec<_> = claims

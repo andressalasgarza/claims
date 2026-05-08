@@ -239,7 +239,9 @@ fn render_claim_human(c: &Claim, store: &Store) -> Result<String> {
     Ok(t.to_string())
 }
 
-fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
+/// shared filter: returns true if claim's agent is in the exclude list.
+/// used by timeline + suspect rendering and by main's cmd_suspect.
+pub(crate) fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
     if exclude.is_empty() {
         return false;
     }

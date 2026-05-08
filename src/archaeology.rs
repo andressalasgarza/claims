@@ -18,7 +18,7 @@ use crate::git;
 use crate::output::OutputFormat;
 use crate::store::Store;
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,6 @@ use ulid::Ulid;
 
 pub const AGENT: &str = "archaeology";
 pub const SCHEMA_VERSION: &str = "archaeology/v2";
-pub const DEFAULT_MAX: usize = 10;
 pub const MAX_CEILING: usize = 50;
 
 const CLAIM_MARKERS: &[&str] = &["// clms-claim:", "# clms-claim:"];
@@ -98,7 +97,7 @@ pub struct Candidate {
     /// ascending so older claims come first — they've earned their stake
     /// by surviving subsequent edits.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<DateTime<Utc>>,
     pub debate: Option<serde_json::Value>,
 }
 
@@ -163,7 +162,7 @@ fn harvest_all(root: &Path) -> Result<(Vec<Candidate>, usize)> {
     let mut seen: HashSet<String> = HashSet::new();
     all.retain(|c| seen.insert(c.id.clone()));
 
-    all.sort_by(|a, b| candidate_chronological_order(a, b));
+    all.sort_by(candidate_chronological_order);
 
     Ok((all, proposals_added))
 }
@@ -265,7 +264,7 @@ fn filter_sources(requested: &[String]) -> Result<Vec<String>> {
 
 fn harvest_annotations(root: &Path) -> Result<Vec<Candidate>> {
     let mut files = Vec::new();
-    walk_dir(root, root, &mut files)?;
+    walk_dir(root, &mut files)?;
     files.sort();
 
     let mut candidates = Vec::new();
@@ -331,7 +330,7 @@ fn parse_proposal_row(
     path: &Path,
     idx: usize,
     row: &serde_json::Value,
-    manifest_mtime: Option<chrono::DateTime<chrono::Utc>>,
+    manifest_mtime: Option<DateTime<Utc>>,
 ) -> Result<Option<Candidate>> {
     let text = row["text"]
         .as_str()
@@ -392,7 +391,7 @@ fn parse_suggested_evidence(arr: Option<&serde_json::Value>) -> Vec<SuggestedEvi
         .collect()
 }
 
-fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return Ok(()),
@@ -406,7 +405,7 @@ fn walk_dir(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
             if IGNORE_DIRS.contains(&name_str.as_ref()) {
                 continue;
             }
-            walk_dir(root, &path, out)?;
+            walk_dir(&path, out)?;
         } else if path.is_file() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if SOURCE_EXTS.contains(&ext) {
@@ -539,22 +538,6 @@ fn candidate_id(kind: &str, text: &str, where_str: &str) -> String {
     let payload = format!("{}|{}|{}", kind, text, where_str);
     let h = blake3::hash(payload.as_bytes()).to_hex();
     format!("c-{}", &h.to_string()[..4])
-}
-
-// ---------- helpers used elsewhere ----------
-
-#[allow(dead_code)]
-pub fn agent_excluded(agent: &Option<String>, exclude: &[String]) -> bool {
-    if exclude.is_empty() {
-        return false;
-    }
-    let set: HashSet<&str> = exclude.iter().map(|s| s.as_str()).collect();
-    agent.as_deref().map(|a| set.contains(a)).unwrap_or(false)
-}
-
-#[allow(dead_code)]
-pub fn shadow_session() -> String {
-    format!("backfill-{}", Utc::now().to_rfc3339())
 }
 
 // ---------- commit (phase 3) ----------
@@ -866,7 +849,3 @@ fn cmd_purge(store: &mut Store, args: PurgeArgs, fmt: OutputFormat) -> Result<()
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn _ensure_unused() -> Result<()> {
-    Err(anyhow!("placeholder"))
-}
