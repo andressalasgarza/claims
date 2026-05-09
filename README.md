@@ -26,6 +26,7 @@ orchestrator can spawn them regardless of cwd:
 ```bash
 clms install-agents          # writes to ~/.pi/agent/agents/clms/
 clms install-agents --force  # overwrite if you've upgraded clms
+clms install-agents --dry-run  # print what would be written, touch nothing
 ```
 
 verify:
@@ -247,8 +248,9 @@ clms reindex
 clms archaeology suggest [--max N] [--source K] [-o PATH]
 clms archaeology commit  --from-plan PATH [--keep K]
 clms archaeology purge   --session STAMP [--agent A]
-clms schema           # machine-readable schema (--format ai for json)
-clms help-all         # every subcommand's long help in one dump
+clms install-agents          [--force] [--dry-run]
+clms schema [methods]       # machine-readable schema (`methods` subtarget = just the requirement matrix; --format ai for json)
+clms help-all               # every subcommand's long help in one dump
 ```
 
 ## archaeology (v2)
