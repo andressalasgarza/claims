@@ -147,8 +147,9 @@ the cut rationale.
 - **suggested_evidence.method == unit-test | code-test | sim-test** → these
   methods are refused at parse time by `clms verify`. survivors will fail
   promotion. either drop, or note in your rationale that the surviving
-  evidence method must be one of the falsifiable seven (prop-test,
-  integration-test, replay-test, stat-test, observed, documented, derived).
+  evidence method must be one of the falsifiable nine in schema 1.2
+  (prop-test, integration-test, replay-test, stat-test, benchmark,
+  estimate, observed, documented, derived).
 
 ## structural-strictness anti-patterns (binary now refuses these at verify)
 
@@ -181,3 +182,21 @@ constraint in your `rationale` so the human knows the bar.
   `/dev/urandom` output or known-synthetic fixtures.
 - **stat-test with claimed p-value outside [0, 1] or sample_size < 2** →
   refused at parse. drop candidates that would require fabricated stats.
+- **stat-test --test-type is a closed enum (schema 1.2)** — only the
+  named hypothesis tests are accepted (chi-squared, t-test family, ks,
+  mann-whitney-u, etc.). agents that suggest `--test-type AUC` or
+  `--test-type my-test` get refused at clap parse time. for AUC / F1 /
+  precision / recall / RMSE etc., the correct method is **benchmark**,
+  not stat-test (no p-value involved).
+- **benchmark with metric below threshold (higher-better) or above
+  (lower-better)** → refused. clms enforces direction per metric. drop
+  candidates that would require a known-failing eval.
+- **estimate with point outside CI, ci_lower > ci_upper, or
+  confidence_level not in (0, 1)** → refused. the CI shape must be
+  self-consistent. drop candidates whose only path to verification is a
+  malformed CI.
+- **min_tier mismatch** → if the target claim was created with
+  `--min-tier <tier>`, only methods at or above that tier verify. a
+  candidate stamped `min_tier=empirical` cannot be promoted using
+  `observed`, `documented`, or `derived` evidence — only the six empirical
+  methods. check the target claim's `min_tier` field before approving.

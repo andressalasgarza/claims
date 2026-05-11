@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 /// + `models::REFUSED_METHODS` so it cannot drift from validation logic.
 ///
 /// stable contract for agents:
-///   { "version": "1.1",
+///   { "version": "1.2",
 ///     "methods": [ { name, tier, runnable, falsification_surface,
 ///                    required_fields, exclusive_flag } ... ],
 ///     "refused_methods": [ { name, error_msg } ... ] }
@@ -35,7 +35,7 @@ pub fn methods_table() -> Value {
         .map(|r| json!({ "name": r.name, "error_msg": r.error_msg }))
         .collect();
     json!({
-        "version": "1.1",
+        "version": "1.2",
         "methods": methods,
         "refused_methods": refused,
     })

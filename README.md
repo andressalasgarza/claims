@@ -102,7 +102,7 @@ self-tests. that's what your test runner is for.
 
 | tier | comes from | example |
 |---|---|---|
-| `empirical` | `prop-test`, `integration-test`, `replay-test`, `stat-test` | counterexample-finding fuzz, real api probe, backtest on captured data, ks-test on real samples |
+| `empirical` | `prop-test`, `integration-test`, `replay-test`, `stat-test`, `benchmark`, `estimate` | counterexample-finding fuzz, real api probe, backtest on captured data, ks-test on real samples, AUC vs threshold, mean ± CI |
 | `observed` | `observed` | tx hash, log line, captured response |
 | `documented` | `documented` | official primary source + exact quote |
 | `derived` | `derived` | inference from at least 2 other claims |
@@ -118,7 +118,9 @@ each method requires specific fields. missing any → exit 1, no claim is writte
 | `prop-test` | `--ref` `--cmd` | randomized input generator (proptest/quickcheck/fuzz) |
 | `integration-test` | `--ref` `--target` `--cmd` | the real external system at `--target` (loopback / RFC1918 refused unless `--allow-local`) |
 | `replay-test` | `--ref` `--dataset` `--cmd` | frozen real-world capture at `--dataset` |
-| `stat-test` | `--ref` `--test-type` `--p-value` `--sample-size` `--data-source` | real \| live samples (simulated refused; `p ∈ [0,1]`, `n ≥ 2`) |
+| `stat-test` | `--ref` `--test-type` `--p-value` `--sample-size` `--data-source` | real \| live samples (simulated refused; `p ∈ [0,1]`, `n ≥ 2`; `--test-type` is a closed enum) |
+| `benchmark` | `--ref` `--cmd` `--metric` `--metric-value` `--threshold` `--sample-size` `--data-source` | measured metric on held-out real data vs declared threshold; direction (higher- or lower-better) fixed per metric |
+| `estimate` | `--ref` `--cmd` `--estimator` `--point-value` `--ci-lower` `--ci-upper` `--confidence-level` `--sample-size` `--data-source` | claimed point estimate with CI; `ci_lower ≤ point ≤ ci_upper`, `0 < conf < 1` |
 | `observed` | `--ref` (file / URL / `sha256:HEX`) | a captured artifact |
 | `documented` | `--ref` `--quote "<exact text>"` | primary-source document |
 | `derived` | `--from <id>` `--from <id>` (min 2, each verified, no cycles, no self) | upstream claims (cascade on refute) |
@@ -127,12 +129,45 @@ for `prop-test` / `integration-test` / `replay-test`, `--cmd` is **executed**
 at verify time. clms captures the actual `exit_code` and `stdout_hash`. the
 optional `--exit-code` flag is reinterpreted as a *predicted* value:
 mismatch with the actual exit is a hard error before any state mutation.
+for `benchmark` / `estimate`, `--cmd` is also executed at verify time and
+must exit `0`; the gate signal is the structural check (metric vs threshold,
+or point inside CI) which is enforced *before* the cmd runs.
 
 local file refs (and `--dataset` on replay-test) are content-hashed at write
 time. tampering is detectable via three drift checks: ref drift (same path,
 different bytes), dataset drift (same dataset path, different bytes), and
 rename drift (same bytes, different ref). `--data-source=simulated` is
 rejected at parse time.
+
+## min_tier (opt-in evidence-tier floor)
+
+orchestrators (e.g. a multi-agent system) often need to declare "this is a
+science claim, demand empirical evidence" at the moment the claim is
+written. without this, a downstream agent can satisfy a science claim with
+`observed` evidence (cheapest method that passes the cli's structural check)
+and the gate doesn't notice.
+
+`--min-tier` stamps a floor on a claim at write time:
+
+```
+clms add "ETH 1h-return distribution rejects uniform at p<0.01" --min-tier empirical
+```
+
+then `clms verify` refuses to mark this claim verified using anything below
+the floor:
+
+```
+clms verify 7 --method observed --ref captured.txt
+# Error: claim #7 requires min_tier=empirical (got method 'observed' at tier observed).
+# allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark | estimate.
+```
+
+the allowed-methods list is filtered from the methods table at runtime, so it
+stays correct as new methods land (e.g. `benchmark` and `estimate` joined the
+empirical bucket in schema 1.2).
+
+additive, opt-in, backward-compat. claims without `min_tier` behave exactly
+as before (no gate, all methods accepted).
 
 ## edges
 

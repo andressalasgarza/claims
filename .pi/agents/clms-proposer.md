@@ -50,6 +50,39 @@ before suggesting `suggested_evidence`, sanity-check against these rules:
 
 - **stat-test requires p ∈ [0.0, 1.0] and sample_size ≥ 2,** with
   `--data-source real | live`. simulated data is refused at parse time.
+  `--test-type` is a **closed enum** (schema 1.2): chi-squared,
+  chi-squared-goodness-of-fit, t-test-paired, t-test-unpaired,
+  t-test-one-sample, welch-t, anova, kolmogorov-smirnov, mann-whitney-u,
+  wilcoxon-signed-rank, shapiro-wilk, anderson-darling, fisher,
+  permutation, likelihood-ratio. agent-typed strings like `AUC` or
+  `my-test` are refused at parse time.
+
+- **benchmark (new in 1.2) for classifier/regression metrics.** requires
+  `--metric` (closed enum: auc-roc, auc-pr, f1, precision, recall,
+  accuracy, balanced-accuracy, mcc, kappa-cohen, r2 = higher-better;
+  log-loss, brier, rmse, mae, mape = lower-better), `--metric-value`,
+  `--threshold`, `--sample-size`, `--data-source`, `--cmd`. clms enforces
+  direction: metric_value must be ≥ threshold for higher-better metrics
+  or ≤ threshold for lower-better. miss = state stays pending. propose
+  benchmark for claims like "model X beats baseline Y by Z on metric M".
+
+- **estimate (new in 1.2) for point estimates with CIs.** requires
+  `--estimator` (closed enum: mean, median, geometric-mean, std-dev,
+  std-error, variance, skewness, kurtosis, cohens-d, odds-ratio,
+  risk-ratio, correlation, spearman-rho), `--point-value`, `--ci-lower`,
+  `--ci-upper`, `--confidence-level` (in (0, 1)), `--sample-size`,
+  `--data-source`, `--cmd`. clms enforces shape: ci_lower ≤ point_value ≤
+  ci_upper. propose estimate for claims like "the 95% CI on µ contains 0"
+  or "skewness lies in [a, b] at 95% conf". DO NOT use stat-test for
+  these — stat-test wants a p-value, not a CI.
+
+- **respect min_tier on the target claim.** if the claim was created with
+  `--min-tier empirical`, your `suggested_evidence` row MUST pick one of
+  the 6 empirical methods (prop-test, integration-test, replay-test,
+  stat-test, benchmark, estimate). proposing `observed` or `documented`
+  for an empirical-floor claim gets refused at verify time. read the
+  target claim with `clms show <id> --format ai` and check the
+  `min_tier` field before proposing.
 
 - **derived --from requires ≥ 2 parents, each must exist, each must be in
   state Verified (not Pending/Suspect/Refuted/Unverifiable), no
@@ -63,9 +96,11 @@ before suggesting `suggested_evidence`, sanity-check against these rules:
   hash) is refused. mutating refs or datasets between verifies requires
   explicit `--acknowledge-drift`.
 
-- **the schema is 1.1 (clms cli 2.1).** `unit-test`, `code-test`, and
+- **the schema is 1.2 (clms cli 2.1).** `unit-test`, `code-test`, and
   `sim-test` methods are refused at parse time — see the falsifiability
-  rules below for why.
+  rules below for why. 1.2 added `benchmark`, `estimate`, the
+  `HypothesisTest` closed enum on stat-test's --test-type, and the
+  opt-in `min_tier` field on claims.
 
 ## the test for a good proposal
 
