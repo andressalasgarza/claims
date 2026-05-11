@@ -313,11 +313,87 @@ fn validate_stat_test(ev: &Evidence) -> Result<()> {
     Ok(())
 }
 
+/// observed --ref must be one of:
+///   - an existing local file (hashable; the H17 path will content_hash it)
+///   - a URL with a recognized scheme (http/https/file/ftp/ssh/git)
+///   - a content-address: sha256:HEX / blake3:HEX / sha1:HEX (any hex case)
+///
+/// random strings like "foo" or "my notes" are refused. without this check
+/// observed degrades to "agent typed any string" and provides no auditable
+/// surface for refutation.
+pub fn ref_shape_acceptable(s: &str) -> bool {
+    if std::path::Path::new(s).exists() {
+        return true;
+    }
+    let recognized_url_schemes = [
+        "http://", "https://", "file://", "ftp://", "ftps://", "ssh://", "git://", "ws://", "wss://",
+    ];
+    if recognized_url_schemes.iter().any(|p| s.starts_with(p)) {
+        return true;
+    }
+    // content-address: <hashname>:<hex>
+    if let Some((scheme, hex)) = s.split_once(':') {
+        if matches!(scheme, "sha256" | "sha1" | "sha512" | "blake3" | "md5")
+            && !hex.is_empty()
+            && hex.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn validate_observed(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
         return Err(anyhow!("observed requires --ref <path-url-or-hash>"));
     }
+    if !ref_shape_acceptable(&ev.r#ref) {
+        return Err(anyhow!(
+            "observed --ref '{}' is not auditable. it must be one of: (a) an existing local file path, (b) a URL (http/https/file/ftp/ssh/git/ws), or (c) a content-address (sha256:HEX / blake3:HEX / sha1:HEX). bare strings are refused because they provide no surface for refutation.",
+            ev.r#ref
+        ));
+    }
     Ok(())
+}
+
+/// is this --target a loopback or RFC1918 / link-local / unspecified address?
+/// rejects: localhost, 127/8, 0/8, 10/8, 172.16/12, 192.168/16, 169.254/16,
+/// ::1, fc00::/7, fe80::/10. matches by hostname *or* parsed IP literal so
+/// both `https://localhost:8080/health` and `http://127.0.0.1` are caught.
+pub fn target_is_local(target: &str) -> bool {
+    // strip scheme + path: "https://host:port/path" -> "host:port" -> "host"
+    let after_scheme = target.split_once("://").map(|(_, r)| r).unwrap_or(target);
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    let host = match host_port.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => host_port,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "localhost.localdomain" | "" | "::" | "::1"
+    ) {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.octets()[0] == 0
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback() || v6.is_unspecified() || {
+                    let s = v6.segments()[0];
+                    // fc00::/7 (unique-local) or fe80::/10 (link-local)
+                    (s & 0xfe00) == 0xfc00 || (s & 0xffc0) == 0xfe80
+                }
+            }
+        };
+    }
+    false
 }
 
 fn validate_documented(ev: &Evidence) -> Result<()> {

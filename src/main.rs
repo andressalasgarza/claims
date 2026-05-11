@@ -16,7 +16,7 @@ use output::OutputFormat;
 use std::path::PathBuf;
 use store::{
     cascade_suspect, detect_dataset_drift, detect_drift, detect_rename, evidence_user_hash,
-    hash_ref_if_local, latest_runnable_evidence, run_cmd, validate_evidence, Store,
+    hash_ref_if_local, latest_runnable_evidence, run_cmd, target_is_local, validate_evidence, Store,
 };
 use ulid::Ulid;
 
@@ -231,6 +231,13 @@ struct VerifyArgs {
     /// required when this --ref's content has changed since a prior evidence entry on the same claim.
     #[arg(long)]
     acknowledge_drift: bool,
+    /// integration-test only: allow loopback / private-network --target.
+    /// without this flag, localhost, 127/8, 0/8, ::1, and RFC1918 ranges are
+    /// refused as targets because the falsifiability rationale of
+    /// integration-test is "hit a real external system the author does not
+    /// control" — a service on your own machine fails that test.
+    #[arg(long)]
+    allow_local: bool,
 }
 
 #[derive(Args)]
@@ -754,6 +761,21 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
     let m = EvidenceMethod::parse(&a.method)?;
     let mut ev = build_evidence(&a, m)?;
     validate_evidence(&ev, store, seq)?;
+    // loopback / private-network --target check for integration-test.
+    // integration-test's whole point is hitting a real external system the
+    // author does not control. localhost / 127.x / RFC1918 fail that. allow
+    // the override (--allow-local) because dev/CI smoketests legitimately
+    // probe local services, but make it explicit so reviewers can filter.
+    if matches!(m, EvidenceMethod::IntegrationTest) {
+        if let Some(t) = ev.target.as_deref() {
+            if target_is_local(t) && !a.allow_local {
+                return Err(anyhow!(
+                    "integration-test --target '{}' is a loopback / private-network address. integration-test must hit a real external system the author does not control; a service on your own machine cannot falsify that.\n\npass --allow-local if you intentionally want to record a local smoketest as integration evidence (lower-confidence by convention, but accepted), or use --method observed with a log artifact instead.",
+                    t
+                ));
+            }
+        }
+    }
     // execute --cmd at verify time for methods that take one. an agent can no
     // longer pass --exit-code 0 against a command that returns 1; clms runs
     // the command itself and stores the actual result. the user-supplied
