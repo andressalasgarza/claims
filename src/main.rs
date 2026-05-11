@@ -2,64 +2,25 @@ mod archaeology;
 mod git;
 mod models;
 mod output;
+mod schema;
 mod store;
+
+use crate::schema::schema_value;
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use colored::*;
-use models::{Claim, Edge, EdgeType, Evidence, EvidenceMethod, State, SCHEMA_VERSION};
+use models::{Claim, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, State, SCHEMA_VERSION};
 use output::OutputFormat;
 use std::path::PathBuf;
 use store::{
-    cascade_suspect, detect_drift, hash_ref_if_local, latest_runnable_evidence, run_cmd,
-    validate_evidence, Store,
+    cascade_suspect, detect_dataset_drift, detect_drift, detect_rename, evidence_user_hash,
+    hash_ref_if_local, latest_runnable_evidence, run_cmd, target_is_local, validate_evidence, Store,
 };
 use ulid::Ulid;
 
-const TOP_HELP: &str = r#"
-QUICKSTART
-  clms add "polymarket lags binance ~300ms" --tag market:btc
-  clms verify 1 --method stat-test --ref ./test.py --cmd "python3 ./test.py" \
-               --p-value 0.003 --sample-size 4821 --test-type ks
-  clms add "we can arb this lag" --depends-on 1
-  clms refute 1 --by 3 --reason "lookahead bias" --cascade
-  clms timeline
-  clms context --format ai             # for stuffing into agent context
-
-STATES
-  pending      logged, no evidence yet
-  verified     evidence attached, passed validation
-  refuted      proven wrong, points to replacement claim
-  unverifiable explicitly cannot be tested (subjective, future-dependent)
-  suspect      a claim it depended on was refuted; needs re-verification
-
-CONFIDENCE TIERS (auto-derived from evidence method)
-  empirical    stat-test or code-test    (strongest)
-  observed     observed (runtime data)
-  documented   official primary source
-  derived      inference from >= 2 other claims
-
-FOR AGENTS
-  always run with --format ai for json output. set CLAIMS_AGENT and
-  CLAIMS_SESSION env vars so every write is auto-stamped. before adding a
-  claim, run `clms context --format ai` to load known truth, then list
-  every existing claim that must hold for yours via --depends-on.
-
-  agent self-discovery (run once, cache the result):
-    clms --format ai schema     # full requirement matrix + enums + envelopes
-    clms help-all               # every subcommand's long help in one shot
-
-  under --format ai, errors emit a single-line json envelope on stderr:
-    {"error":"...","kind":"clap|runtime","code":1|2,...}
-  exit 2 = bad args (clap), exit 1 = runtime (validation, drift, not found).
-
-  archaeology v2 (candidacy engine, never verifies):
-    clms archaeology suggest -o candidates.json     # phase 1: harvest
-    # then debate via pi-subagents .pi/agents/clms-judge.md → survivors.json
-    clms archaeology commit --from-plan survivors.json   # phase 3: pending
-    clms context --exclude-agent archaeology             # filter from ctx
-"#;
+const TOP_HELP: &str = include_str!("help_text/top.txt");
 
 #[derive(Parser)]
 #[command(
@@ -79,93 +40,15 @@ struct Cli {
     cmd: Cmd,
 }
 
-const ADD_HELP: &str = r#"
-EXAMPLES
-  clms add "polymarket api rate limit is 60/min" --tag infra
-  clms add "we can arb this lag" --depends-on 1 --depends-on 3 --tag strategy
-  clms add "mm bots withdraw at >50k size" --unverifiable --tag market
+const ADD_HELP: &str = include_str!("help_text/add.txt");
 
-NOTES
-  - --depends-on registers prerequisite claims. if any is later refuted with
-    --cascade, this claim auto-flips to suspect.
-  - --unverifiable is for claims you genuinely cannot test (subjective,
-    future-dependent). honesty bucket. otherwise the claim starts pending.
-  - claim text should be falsifiable. "x lags y by ~300ms" not "latency is bad".
-"#;
+const VERIFY_HELP: &str = include_str!("help_text/verify.txt");
 
-const VERIFY_HELP: &str = r#"
-EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
-  stat-test   --ref --test-type --p-value --sample-size  [--cmd recommended]
-  code-test   --ref --exit-code                          [--cmd recommended]
-  observed    --ref
-  documented  --ref --quote "<exact text from doc>"
-  derived     --from <id> --from <id>          (min 2)
+const REFUTE_HELP: &str = include_str!("help_text/refute.txt");
 
-EXAMPLES
-  clms verify 1 --method stat-test --ref ./test.py \
-    --test-type ks --p-value 0.003 --sample-size 4821 \
-    --cmd "python3 ./test.py"
+const RERUN_HELP: &str = include_str!("help_text/rerun.txt");
 
-  clms verify 2 --method code-test --ref ./bench.sh --exit-code 0 \
-    --cmd "bash ./bench.sh"
-
-  clms verify 4 --method documented --ref https://docs.poly.com/api/limits \
-    --quote "default rate limit is 100 requests per minute"
-
-DRIFT
-  if --ref's file content has changed since a prior evidence entry on this
-  same claim, verify will refuse with exit 1 and show both hashes. add
-  --acknowledge-drift if the iteration is intentional. if the new result
-  contradicts the prior conclusion, you should refute the claim and write a
-  new one instead of acknowledging drift.
-
-CONFIDENCE
-  auto-derived from method. cannot be set manually. add stronger evidence
-  later (e.g. stat-test on top of documented) to bump confidence tier.
-"#;
-
-const REFUTE_HELP: &str = r#"
-EXAMPLES
-  clms refute 1 --by 7 --reason "lookahead bias in original test"
-  clms refute 1 --by 7 --reason "..." --cascade   # auto-suspect dependents
-
-NOTES
-  - <id> = claim being refuted. --by <id> = the claim that supersedes it.
-  - the replacement claim must already exist. typical workflow: write the
-    new claim first with `clms add ...`, verify it, THEN refute the old one.
-  - --cascade walks the depends_on graph and flags every transitive
-    dependent of <id> as suspect. without --cascade you get a warning
-    listing them but no auto-flag. use --cascade unless you have a reason
-    not to.
-"#;
-
-const RERUN_HELP: &str = r#"
-EXAMPLES
-  clms rerun 1                       # re-execute stored cmd, append evidence
-  clms rerun 1 --acknowledge-drift   # acknowledge if test file changed
-
-NOTES
-  - requires the original verify to have stored a --cmd. if missing, errors.
-  - finds the latest evidence on the claim with method in {stat-test, code-test}
-    and a stored cmd, re-executes via `sh -c "<cmd>"`, captures exit code +
-    stdout hash + new ref_hash, appends as fresh evidence.
-  - if the test file's content changed since prior evidence, drift is
-    detected and rerun refuses with exit 1 unless --acknowledge-drift is set.
-  - rerun does NOT change the claim's state. use it to confirm a verified
-    claim still holds, or to capture fresh evidence over time.
-"#;
-
-const DIFF_HELP: &str = r#"
-EXAMPLES
-  clms diff-evidence 1
-  clms --format ai diff-evidence 1   # full json for agent inspection
-
-NOTES
-  shows every evidence entry on a claim chronologically with hashes,
-  p-values, exit codes, and notes. useful for spotting silent drift
-  (file hashes that changed between runs) and tracking how a claim's
-  support has evolved over multiple verify/rerun cycles.
-"#;
+const DIFF_HELP: &str = include_str!("help_text/diff.txt");
 
 #[derive(Subcommand)]
 enum Cmd {
@@ -213,8 +96,12 @@ enum Cmd {
     /// dump top-level help + every subcommand's help in a single output. for agent context-stuffing.
     HelpAll,
     /// dump machine-readable schema (commands, evidence-method requirements, enums). for agent self-discovery.
+    /// pass `methods` as the target to get just the method-descriptor table as json (agent introspection surface).
     #[command(after_help = SCHEMA_HELP)]
-    Schema,
+    Schema {
+        /// optional sub-target. valid: `methods` (descriptor table only).
+        target: Option<String>,
+    },
     /// archaeology v2: harvest stake-signal candidates, debate via pi-subagents, commit survivors. (v1 removed.)
     #[command(after_help = ARCHAEOLOGY_HELP, subcommand_required = true, arg_required_else_help = true)]
     Archaeology {
@@ -252,14 +139,14 @@ struct SuggestArgs {
     source: Vec<String>,
     /// write candidates.json to this path (default: stdout)
     #[arg(long, short = 'o')]
-    output: Option<std::path::PathBuf>,
+    output: Option<PathBuf>,
 }
 
 #[derive(Args)]
 struct CommitArgs {
     /// path to survivors.json from the debate phase
     #[arg(long = "from-plan")]
-    from_plan: std::path::PathBuf,
+    from_plan: PathBuf,
     /// cap on committed claims (default 8)
     #[arg(long, default_value_t = 8)]
     keep: usize,
@@ -275,39 +162,9 @@ struct PurgeArgs {
     agent: Option<String>,
 }
 
-const ARCHAEOLOGY_HELP: &str = r#"
-EXAMPLES
-  clms archaeology suggest                          # harvest candidates, print json to stdout
-  clms archaeology suggest --max 5 -o cand.json     # write to file, cap at 5
-  clms archaeology commit --from-plan survivors.json  # ingest curated survivors
-  clms archaeology purge --session backfill-<ts>    # remove a backfill session
+const ARCHAEOLOGY_HELP: &str = include_str!("help_text/archaeology.txt");
 
-v2 CONTRACT
-  archaeology is a CANDIDACY engine, not a verification engine.
-  - phase 1 (suggest): byte-walks source for `// clms-claim:` and `# clms-claim:`
-    annotations. bounded-N (default 10, ceiling 50). NEVER writes claims.
-  - phase 2 (debate): orchestrator-agnostic. pi-subagents reference impl uses the
-    `clms.judge` agent (.pi/agents/clms-judge.md). drop is structural default.
-  - phase 3 (commit): writes `state: pending` claims with archaeology_meta.
-    promotion to verified happens later via `clms verify`. always pending.
-
-SEE ALSO
-  docs/archaeology.md      full design + signal taxonomy + protocol contract
-  clms verify              promote pending claims after archaeology commits them
-  clms context --exclude-agent archaeology   filter backfill from live ctx
-"#;
-
-const SCHEMA_HELP: &str = r#"
-EXAMPLES
-  clms schema                          # human-readable schema overview
-  clms --format ai schema              # full json schema for agent self-discovery
-
-NOTES
-  emits the requirement matrix per evidence method (mirrors what `verify`
-  enforces at runtime), plus enum values for states, confidence tiers, edge
-  types, and output formats. cache it once per agent session and you can
-  build valid `verify` invocations without trial-and-error.
-"#;
+const SCHEMA_HELP: &str = include_str!("help_text/schema.txt");
 
 #[derive(Args)]
 struct AddArgs {
@@ -360,9 +217,27 @@ struct VerifyArgs {
     /// shell command that produced this evidence. enables `claims rerun <id>` later.
     #[arg(long)]
     cmd: Option<String>,
+    /// integration-test only: real external system probed (url/host/endpoint).
+    /// the falsification surface must be auditable.
+    #[arg(long)]
+    target: Option<String>,
+    /// replay-test only: path to real-world captured dataset (parquet/csv/jsonl).
+    /// content-hashed at write time. synthetic data is not allowed.
+    #[arg(long)]
+    dataset: Option<String>,
+    /// stat-test only: real | live. simulated/synthetic data is refused.
+    #[arg(long)]
+    data_source: Option<String>,
     /// required when this --ref's content has changed since a prior evidence entry on the same claim.
     #[arg(long)]
     acknowledge_drift: bool,
+    /// integration-test only: allow loopback / private-network --target.
+    /// without this flag, localhost, 127/8, 0/8, ::1, and RFC1918 ranges are
+    /// refused as targets because the falsifiability rationale of
+    /// integration-test is "hit a real external system the author does not
+    /// control" — a service on your own machine fails that test.
+    #[arg(long)]
+    allow_local: bool,
 }
 
 #[derive(Args)]
@@ -517,7 +392,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Rerun(args) => cmd_rerun(&mut store, args, fmt),
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
         Cmd::HelpAll => cmd_help_all(),
-        Cmd::Schema => cmd_schema(fmt),
+        Cmd::Schema { target } => cmd_schema(target, fmt),
         Cmd::InstallAgents { force, dry_run } => cmd_install_agents(fmt, force, dry_run),
         Cmd::Archaeology { sub } => {
             let s = match sub {
@@ -540,126 +415,22 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn schema_value() -> serde_json::Value {
-    serde_json::json!({
-        "version": "2.0",
-        "archaeology": {
-            "version": "archaeology/v2",
-            "contract": "candidacy engine, NOT verification engine. always writes state=pending. promotion via clms verify.",
-            "agent_stamp": "archaeology",
-            "session_stamp_format": "backfill-<rfc3339-ts>",
-            "phases": {
-                "1_harvest": "clms archaeology suggest. reads two intent surfaces: in-source `// clms-claim:` annotations AND `.archaeology/proposals.json` (agent-written, optional). bounded N (default 10, ceiling 50).",
-                "2_debate": "orchestrator-agnostic. pi-subagents reference impl uses .pi/agents/clms-judge.md (clms.judge runtime). drop is default.",
-                "3_commit": "clms archaeology commit --from-plan <survivors.json>. validates schema, writes state=pending claims with archaeology_meta. transcripts at .archaeology/<session>/."
-            },
-            "intent_surfaces": {
-                "human_in_source": {
-                    "location": "// clms-claim: ... or # clms-claim: ... in *.rs/.py/.ts/.go/...",
-                    "persistence": "durable, version-controlled"
-                },
-                "agent_manifest": {
-                    "location": ".archaeology/proposals.json",
-                    "persistence": "ephemeral, regenerable",
-                    "reference_agent": ".pi/agents/clms-proposer.md",
-                    "schema": {
-                        "version": "archaeology/v2",
-                        "proposals": [{"text": "required", "where": "required", "snippet": "optional", "suggested_evidence": "optional []"}]
-                    }
-                }
-            },
-            "signals_v2": [
-                {"kind": "clms-claim-annotation", "shipped": true, "description": "// clms-claim: in source code OR row in .archaeology/proposals.json. one signal kind, two intent surfaces."}
-            ],
-            "signals_deferred": [
-                "test-name-invariant", "type-marked", "mb-verify-task",
-                "cm-structural", "readme-assertion", "docstring-invariant"
-            ],
-            "protocol": {
-                "candidates_schema_version": "archaeology/v2",
-                "survivors_invariants": [
-                    "input is candidates.json matching the schema",
-                    "output is survivors.json with debate.judge per row and keep:bool per row",
-                    "drop is structural default (keep:true requires affirmative debate.judge.verdict=keep)",
-                    "K cap is post-hoc enforced by `clms archaeology commit`, not by the orchestrator"
-                ]
-            },
-            "refusal_conditions": [
-                "debate=null on a keep:true row",
-                "keep:true with debate.judge.verdict != keep",
-                "count(keep:true) > --keep cap",
-                "version != 'archaeology/v2'",
-                "candidate_id collision with existing claim (idempotent skip, not error)"
-            ],
-            "filter_live_context": "--exclude-agent archaeology on context/timeline/suspect",
-            "v1_removed": "v1 git+mb auto-transcribe behavior removed. use `clms archaeology purge --session <stamp>` for cleanup."
-        },
-        "states": ["pending", "verified", "refuted", "unverifiable", "suspect"],
-        "confidence_tiers": [
-            {"name": "derived",    "rank": 1},
-            {"name": "documented", "rank": 2},
-            {"name": "observed",   "rank": 3},
-            {"name": "empirical",  "rank": 4}
-        ],
-        "edge_types": ["depends_on", "tests", "supports", "refines", "refutes"],
-        "output_formats": ["default", "human", "ai"],
-        "exit_codes": {
-            "0": "success",
-            "1": "runtime error (validation, drift, not found, etc)",
-            "2": "argument parse error (missing/invalid flag)"
-        },
-        "error_envelope_ai": {
-            "description": "under --format ai, errors emit a single-line json object on stderr",
-            "fields": {
-                "error":     "string, human message",
-                "kind":      "\"clap\" | \"runtime\"",
-                "code":      "integer exit code",
-                "clap_kind": "clap ErrorKind variant (clap errors only)",
-                "field":     "offending --flag (clap errors only, when extractable)"
-            }
-        },
-        "evidence_methods": {
-            "stat-test": {
-                "required": ["ref", "p_value", "sample_size", "test_type"],
-                "recommended": ["cmd"],
-                "confidence": "empirical",
-                "notes": "file at --ref is content-hashed for drift detection"
-            },
-            "code-test": {
-                "required": ["ref", "exit_code"],
-                "recommended": ["cmd"],
-                "confidence": "empirical",
-                "notes": "file at --ref is content-hashed for drift detection"
-            },
-            "observed": {
-                "required": ["ref"],
-                "recommended": [],
-                "confidence": "observed",
-                "notes": "runtime data; --ref is path/url/hash"
-            },
-            "documented": {
-                "required": ["ref", "quote"],
-                "recommended": [],
-                "confidence": "documented",
-                "notes": "--ref is the doc url; --quote is exact text"
-            },
-            "derived": {
-                "required": ["from (>=2)"],
-                "recommended": [],
-                "confidence": "derived",
-                "notes": "inference from at least 2 other claim ids"
-            }
-        },
-        "env_vars": {
-            "CLAIMS_FORMAT":  "default output format (default|human|ai)",
-            "CLAIMS_DIR":     "working directory containing .claims/",
-            "CLAIMS_AGENT":   "auto-stamp every write with this agent name",
-            "CLAIMS_SESSION": "auto-stamp every write with this session id"
-        }
-    })
-}
 
-fn cmd_schema(fmt: OutputFormat) -> Result<()> {
+fn cmd_schema(target: Option<String>, fmt: OutputFormat) -> Result<()> {
+    if let Some(t) = target.as_deref() {
+        match t {
+            "methods" => {
+                println!("{}", serde_json::to_string_pretty(&schema::methods_table())?);
+                return Ok(());
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown schema target '{}'. valid: methods",
+                    other
+                ));
+            }
+        }
+    }
     if matches!(fmt, OutputFormat::Ai) {
         println!("{}", serde_json::to_string(&schema_value())?);
         return Ok(());
@@ -691,61 +462,98 @@ fn cmd_schema(fmt: OutputFormat) -> Result<()> {
 const JUDGE_AGENT_MD: &str = include_str!("../.pi/agents/clms-judge.md");
 const PROPOSER_AGENT_MD: &str = include_str!("../.pi/agents/clms-proposer.md");
 
+struct AgentInstallSpec {
+    agents_dir: PathBuf,
+    targets: Vec<(PathBuf, &'static str, &'static str)>,
+}
+
+struct AgentInstallReport {
+    written: Vec<(String, String)>,
+    skipped: Vec<(String, String)>,
+}
+
 fn cmd_install_agents(fmt: OutputFormat, force: bool, dry_run: bool) -> Result<()> {
+    let spec = resolve_agent_install_spec()?;
+    if !dry_run {
+        std::fs::create_dir_all(&spec.agents_dir)
+            .map_err(|e| anyhow!("mkdir {}: {}", spec.agents_dir.display(), e))?;
+    }
+    let report = install_agent_files(&spec, dry_run, force)?;
+    emit_install_report(fmt, &spec.agents_dir, dry_run, force, &report)
+}
+
+fn resolve_agent_install_spec() -> Result<AgentInstallSpec> {
     let home = std::env::var("HOME").map_err(|_| anyhow!("HOME not set"))?;
-    let agents_dir = std::path::PathBuf::from(&home).join(".pi/agent/agents/clms");
+    let agents_dir = PathBuf::from(&home).join(".pi/agent/agents/clms");
     let judge_path = agents_dir.join("judge.md");
     let proposer_path = agents_dir.join("proposer.md");
-    let mut written = Vec::new();
-    let mut skipped = Vec::new();
+    Ok(AgentInstallSpec {
+        agents_dir,
+        targets: vec![
+            (judge_path, JUDGE_AGENT_MD, "clms.judge"),
+            (proposer_path, PROPOSER_AGENT_MD, "clms.proposer"),
+        ],
+    })
+}
 
-    if !dry_run {
-        std::fs::create_dir_all(&agents_dir).map_err(|e| anyhow!("mkdir {}: {}", agents_dir.display(), e))?;
-    }
-    for (path, body, label) in [
-        (&judge_path, JUDGE_AGENT_MD, "clms.judge"),
-        (&proposer_path, PROPOSER_AGENT_MD, "clms.proposer"),
-    ] {
-        let exists = path.exists();
-        if exists && !force {
-            skipped.push((label.to_string(), path.display().to_string()));
+fn install_agent_files(
+    spec: &AgentInstallSpec, dry_run: bool, force: bool,
+) -> Result<AgentInstallReport> {
+    let mut report = AgentInstallReport { written: Vec::new(), skipped: Vec::new() };
+    for (path, body, label) in &spec.targets {
+        if path.exists() && !force {
+            report.skipped.push((label.to_string(), path.display().to_string()));
             continue;
         }
         if !dry_run {
-            std::fs::write(path, body).map_err(|e| anyhow!("write {}: {}", path.display(), e))?;
+            std::fs::write(path, body)
+                .map_err(|e| anyhow!("write {}: {}", path.display(), e))?;
         }
-        written.push((label.to_string(), path.display().to_string()));
+        report.written.push((label.to_string(), path.display().to_string()));
     }
+    Ok(report)
+}
 
-    match fmt {
-        OutputFormat::Ai => {
-            let v = serde_json::json!({
-                "action": "install-agents",
-                "dry_run": dry_run,
-                "force": force,
-                "agents_dir": agents_dir.display().to_string(),
-                "written": written.iter().map(|(a, p)| serde_json::json!({"agent": a, "path": p})).collect::<Vec<_>>(),
-                "skipped": skipped.iter().map(|(a, p)| serde_json::json!({"agent": a, "path": p, "reason": "exists; pass --force to overwrite"})).collect::<Vec<_>>(),
-            });
-            println!("{}", serde_json::to_string_pretty(&v)?);
-        }
-        _ => {
-            if dry_run {
-                println!("dry-run: would install to {}", agents_dir.display());
-            } else {
-                println!("installed to {}", agents_dir.display());
-            }
-            for (a, p) in &written {
-                println!("  written  {} -> {}", a, p);
-            }
-            for (a, p) in &skipped {
-                println!("  skipped  {} -> {} (exists; pass --force to overwrite)", a, p);
-            }
-            if !dry_run && !written.is_empty() {
-                println!();
-                println!("verify with: subagent({{ action: \"list\" }})  // expect clms.judge + clms.proposer");
-            }
-        }
+fn emit_install_report(
+    fmt: OutputFormat,
+    agents_dir: &std::path::Path,
+    dry_run: bool,
+    force: bool,
+    report: &AgentInstallReport,
+) -> Result<()> {
+    if matches!(fmt, OutputFormat::Ai) {
+        let v = serde_json::json!({
+            "action": "install-agents",
+            "dry_run": dry_run,
+            "force": force,
+            "agents_dir": agents_dir.display().to_string(),
+            "written": report.written.iter()
+                .map(|(a, p)| serde_json::json!({"agent": a, "path": p}))
+                .collect::<Vec<_>>(),
+            "skipped": report.skipped.iter()
+                .map(|(a, p)| serde_json::json!({
+                    "agent": a, "path": p,
+                    "reason": "exists; pass --force to overwrite"
+                }))
+                .collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    if dry_run {
+        println!("dry-run: would install to {}", agents_dir.display());
+    } else {
+        println!("installed to {}", agents_dir.display());
+    }
+    for (a, p) in &report.written {
+        println!("  written  {} -> {}", a, p);
+    }
+    for (a, p) in &report.skipped {
+        println!("  skipped  {} -> {} (exists; pass --force to overwrite)", a, p);
+    }
+    if !dry_run && !report.written.is_empty() {
+        println!();
+        println!("verify with: subagent({{ action: \"list\" }})  // expect clms.judge + clms.proposer");
     }
     Ok(())
 }
@@ -803,11 +611,36 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
             return Err(anyhow!("referenced claim #{} does not exist", d));
         }
     }
+    // backfill gate: --created-at and --git-sha forge provenance metadata.
+    // they are documented for archaeology workflows but were exposed on every
+    // `clms add`, allowing any agent to stamp a claim with arbitrary git_sha
+    // and created_at (e.g., year 9999, deadbeef..., a colleague's actual sha).
+    // require CLAIMS_BACKFILL=1 to use them. archaeology constructs claims
+    // directly via the Claim struct, not via cmd_add, so it is unaffected.
+    let backfill_authorized = std::env::var("CLAIMS_BACKFILL").is_ok();
+    if (a.created_at_override.is_some() || a.git_sha_override.is_some()) && !backfill_authorized {
+        let mut flags = Vec::new();
+        if a.created_at_override.is_some() {
+            flags.push("--created-at");
+        }
+        if a.git_sha_override.is_some() {
+            flags.push("--git-sha");
+        }
+        return Err(anyhow!(
+            "refusing to backfill provenance: {} requires CLAIMS_BACKFILL=1.\n\nthese flags forge git_sha and created_at; they are intended for archaeology / historical reconstruction only. set CLAIMS_BACKFILL=1 in the environment to authorize, then re-run.",
+            flags.join(" + "),
+        ));
+    }
     let stamp_at = match a.created_at_override.as_deref() {
         Some(s) => parse_created_at(s)?,
         None => Utc::now(),
     };
     let stamp_sha = a.git_sha_override.clone().or_else(git::current_sha);
+    // stamp backfilled=true whenever provenance overrides were actually used
+    // (presence-checked above; CLAIMS_BACKFILL only authorizes them, doesn't
+    // mark the record). future-me reading this claim can then see "this
+    // git_sha and created_at were retroactively asserted, not auto-captured."
+    let backfilled = a.created_at_override.is_some() || a.git_sha_override.is_some();
     let mut claim = Claim {
         schema_version: SCHEMA_VERSION.into(),
         id: Ulid::new(),
@@ -828,14 +661,56 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
         updated_at: stamp_at,
         content_hash: None,
         archaeology_meta: None,
+        backfilled,
     };
     store.write_claim(&mut claim)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);
     Ok(())
 }
 
-fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Evidence {
-    Evidence {
+/// reject cli flags that are exclusive to a single method when used with the
+/// wrong method. driven by `MethodSpec::exclusive_flag` so adding a new
+/// flag-bearing method requires no changes here.
+fn check_exclusive_flags(method: EvidenceMethod, a: &VerifyArgs) -> Result<()> {
+    use crate::models::METHODS;
+    let present_flags: [(&str, bool); 3] = [
+        ("target", a.target.is_some()),
+        ("dataset", a.dataset.is_some()),
+        ("data-source", a.data_source.is_some()),
+    ];
+    for (flag_name, is_present) in present_flags {
+        if !is_present {
+            continue;
+        }
+        let owner = METHODS.iter().find(|m| m.exclusive_flag == Some(flag_name));
+        match owner {
+            Some(spec) if spec.variant == method => {} // ok: method owns this flag
+            Some(spec) => {
+                return Err(anyhow!(
+                    "--{} is only valid with --method {} (got --method {})",
+                    flag_name,
+                    spec.name,
+                    method.as_str()
+                ));
+            }
+            None => {} // flag has no exclusivity constraint
+        }
+    }
+    Ok(())
+}
+
+fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
+    check_exclusive_flags(m, a)?;
+    let data_source = match (&m, &a.data_source) {
+        (EvidenceMethod::StatTest, Some(s)) => Some(DataSource::parse(s)?),
+        _ => None, // non-stat-test --data-source already rejected by check_exclusive_flags
+    };
+    let dataset_hash = a.dataset.as_deref().and_then(hash_ref_if_local);
+    let cmd_hash = a
+        .cmd
+        .as_deref()
+        .map(|c| blake3::hash(c.as_bytes()).to_hex().to_string());
+    Ok(Evidence {
         method: m,
         r#ref: a.r#ref.clone(),
         note: a.note.clone(),
@@ -847,12 +722,34 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Evidence {
         from_claims: a.from.clone(),
         ref_hash: hash_ref_if_local(&a.r#ref),
         cmd: a.cmd.clone(),
+        cmd_hash,
         stdout_hash: None,
+        target: a.target.clone(),
+        dataset: a.dataset.clone(),
+        dataset_hash,
+        data_source,
         recorded_at: Utc::now(),
+    })
+}
+
+/// CLAIMS_REPAIR=1 disables the content_hash gate in store::read_claim so a
+/// human can recover from a corrupted .claims/ tree (forensic forward-read).
+/// any *mutating* command run while repair is in effect would carry the
+/// tampered state forward; in the worst case (rerun) it would execute a
+/// tampered cmd field as shell. mutators bail at the top with this helper.
+fn refuse_in_repair_mode(op: &str) -> Result<()> {
+    if std::env::var("CLAIMS_REPAIR").is_ok() {
+        return Err(anyhow!(
+            "{}: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips content_hash validation for forensic recovery (show, diff-evidence, timeline, render-context, reindex). \
+fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered cmd field could be carried forward into a rerun and executed as shell.",
+            op
+        ));
     }
+    Ok(())
 }
 
 fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()> {
+    refuse_in_repair_mode("verify")?;
     let seq = store.resolve(&a.id)?;
     let mut claim = store.read_claim(seq)?;
     if claim.state == State::Refuted {
@@ -862,8 +759,59 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
         ));
     }
     let m = EvidenceMethod::parse(&a.method)?;
-    let ev = build_evidence(&a, m);
-    validate_evidence(&ev)?;
+    let mut ev = build_evidence(&a, m)?;
+    validate_evidence(&ev, store, seq)?;
+    // loopback / private-network --target check for integration-test.
+    // integration-test's whole point is hitting a real external system the
+    // author does not control. localhost / 127.x / RFC1918 fail that. allow
+    // the override (--allow-local) because dev/CI smoketests legitimately
+    // probe local services, but make it explicit so reviewers can filter.
+    if matches!(m, EvidenceMethod::IntegrationTest) {
+        if let Some(t) = ev.target.as_deref() {
+            if target_is_local(t) && !a.allow_local {
+                return Err(anyhow!(
+                    "integration-test --target '{}' is a loopback / private-network address. integration-test must hit a real external system the author does not control; a service on your own machine cannot falsify that.\n\npass --allow-local if you intentionally want to record a local smoketest as integration evidence (lower-confidence by convention, but accepted), or use --method observed with a log artifact instead.",
+                    t
+                ));
+            }
+        }
+    }
+    // execute --cmd at verify time for methods that take one. an agent can no
+    // longer pass --exit-code 0 against a command that returns 1; clms runs
+    // the command itself and stores the actual result. the user-supplied
+    // --exit-code, if any, becomes a *predicted* value: a mismatch with the
+    // actual value is a hard error before any state mutation. without this
+    // pass, the falsifiability bar for prop/integration/replay was an honor
+    // system since the contradiction only surfaced on `clms rerun` (which a
+    // cheating agent never invokes).
+    if matches!(
+        m,
+        EvidenceMethod::PropTest | EvidenceMethod::IntegrationTest | EvidenceMethod::ReplayTest
+    ) {
+        let cmd = ev
+            .cmd
+            .as_deref()
+            .expect("validate_evidence guarantees --cmd presence for these methods");
+        let claimed_exit = ev.exit_code;
+        eprintln!("executing: {}", cmd);
+        let (actual_exit, stdout) = run_cmd(cmd)?;
+        if let Some(claimed) = claimed_exit {
+            if claimed != actual_exit {
+                let preview = String::from_utf8_lossy(&stdout[..stdout.len().min(200)]);
+                return Err(anyhow!(
+                    "--exit-code mismatch on claim #{}: you claimed {}, --cmd actually exited {}.\n  cmd:    {}\n  stdout: {:?}{}\n\nclms now executes --cmd at verify time and captures the actual exit_code. either fix --cmd, drop the (now-optional) --exit-code flag, or write a different claim if the contradiction is real.",
+                    seq,
+                    claimed,
+                    actual_exit,
+                    cmd,
+                    preview,
+                    if stdout.len() > 200 { " ..." } else { "" },
+                ));
+            }
+        }
+        ev.exit_code = Some(actual_exit);
+        ev.stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
+    }
     if let Some((prior_hash, prior_at)) = detect_drift(&claim, &ev.r#ref, &ev.ref_hash) {
         if !a.acknowledge_drift {
             return Err(anyhow!(
@@ -879,6 +827,46 @@ refute this one instead.",
             ));
         }
     }
+    if let Some((prior_ref, prior_at)) = detect_rename(&claim, &ev.r#ref, &ev.ref_hash) {
+        if !a.acknowledge_drift {
+            return Err(anyhow!(
+                "ref rename detected: --ref '{}' has the same content_hash as prior evidence on claim #{} which used '{}' (recorded {}).\n\n\
+the bytes are identical — this is a rename/copy/symlink of the same file under a new path, not new evidence. without this check the dedup (which keys on the ref *string*) would accept this as independent evidence and inflate the count for free. use the original ref, re-run with --acknowledge-drift if the renamed copy is intentional documentation, or write a new claim if it really refers to a distinct file.",
+                ev.r#ref, seq, prior_ref, prior_at
+            ));
+        }
+    }
+    if let Some((ds, prior_hash, prior_at)) =
+        detect_dataset_drift(&claim, ev.dataset.as_deref(), &ev.dataset_hash)
+    {
+        if !a.acknowledge_drift {
+            return Err(anyhow!(
+                "dataset drift detected on '{}':\n  prior dataset_hash: {} (recorded {})\n  new dataset_hash:   {}\n\n\
+the replay dataset bytes have changed since prior evidence on this claim, even though the dataset path is unchanged. \
+an agent that swaps parquet/csv contents can defeat ref-string drift detection. if this iteration is intentional, \
+re-run with --acknowledge-drift. if the new bytes contradict the prior conclusion, write a new claim and refute \
+this one instead.",
+                ds,
+                &prior_hash[..16.min(prior_hash.len())],
+                prior_at,
+                ev.dataset_hash.as_deref().map(|h| &h[..16.min(h.len())]).unwrap_or("-"),
+            ));
+        }
+    }
+    // dedup: if the user-supplied evidence fields collide with an existing
+    // entry, refuse. otherwise an agent can stack 5x identical `verify` calls
+    // and inflate the apparent evidence count for free.
+    let new_user_hash = evidence_user_hash(&ev);
+    if claim
+        .evidence
+        .iter()
+        .any(|prior| evidence_user_hash(prior) == new_user_hash)
+    {
+        return Err(anyhow!(
+            "duplicate evidence: claim #{} already has an entry with the same method, ref, and parameters. add new information (a different ref, exit_code, target, dataset, etc.) or write a new claim.",
+            seq
+        ));
+    }
     claim.evidence.push(ev);
     claim.state = State::Verified;
     claim.updated_at = Utc::now();
@@ -888,6 +876,7 @@ refute this one instead.",
 }
 
 fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
+    refuse_in_repair_mode("rerun")?;
     let seq = store.resolve(&a.id)?;
     let mut claim = store.read_claim(seq)?;
     if claim.state == State::Refuted {
@@ -898,14 +887,41 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
     }
     let prior = latest_runnable_evidence(&claim).ok_or_else(|| {
         anyhow!(
-            "claim #{} has no runnable evidence (need code-test or stat-test with stored --cmd)",
+            "claim #{} has no runnable evidence (need prop-test, integration-test, replay-test, or stat-test with stored --cmd)",
             seq
         )
     })?;
     let cmd = prior.cmd.clone().unwrap();
     let r#ref = prior.r#ref.clone();
     let method = prior.method;
-    println!("rerunning: {}", cmd);
+    let prior_target = prior.target.clone();
+    let prior_dataset = prior.dataset.clone();
+    let prior_data_source = prior.data_source;
+    let prior_exit = prior.exit_code;
+    // tamper-gate: re-hash the stored cmd and refuse to execute if the json was
+    // edited since verify time. without this check, anyone who can write to a
+    // .claims/*.json gets arbitrary code execution via `clms rerun`.
+    let recomputed_cmd_hash = blake3::hash(cmd.as_bytes()).to_hex().to_string();
+    match prior.cmd_hash.as_deref() {
+        None => {
+            return Err(anyhow!(
+                "claim #{} has runnable evidence with no cmd_hash (pre-tamper-gate format). \
+ re-verify with the current binary to record cmd_hash, then rerun.",
+                seq
+            ));
+        }
+        Some(prior_hash) if prior_hash != recomputed_cmd_hash => {
+            return Err(anyhow!(
+                "refusing to rerun: cmd has been tampered since verify time.\n  expected cmd_hash: {}\n  actual cmd_hash:   {}\n  cmd:               {:?}\n\nthe `cmd` field in the on-disk evidence record was edited after verify. \
+rerun would execute attacker-controlled shell. write a new claim instead.",
+                &prior_hash[..16.min(prior_hash.len())],
+                &recomputed_cmd_hash[..16],
+                cmd,
+            ));
+        }
+        _ => {}
+    }
+    eprintln!("rerunning: {}", cmd);
     let (exit_code, stdout) = run_cmd(&cmd)?;
     let new_ref_hash = hash_ref_if_local(&r#ref);
     let stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
@@ -922,6 +938,7 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
         }
     }
 
+    let new_dataset_hash = prior_dataset.as_deref().and_then(hash_ref_if_local);
     let ev = Evidence {
         method,
         r#ref,
@@ -934,11 +951,37 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
         from_claims: vec![],
         ref_hash: new_ref_hash,
         cmd: Some(cmd),
+        cmd_hash: Some(recomputed_cmd_hash),
         stdout_hash,
+        target: prior_target,
+        dataset: prior_dataset,
+        dataset_hash: new_dataset_hash,
+        data_source: prior_data_source,
         recorded_at: Utc::now(),
     };
     claim.evidence.push(ev);
     claim.updated_at = Utc::now();
+
+    // contradiction-gate: if the rerun exit_code disagrees with what was
+    // recorded at verify time, the claim's verified status is now suspect.
+    // record the new evidence (audit trail), flip state, write, then exit 1.
+    // without this, an agent can lie `--exit-code 0` on a script that exits
+    // 1, and `rerun` faithfully captures exit=1 but the claim stays verified.
+    let contradicted = match (prior_exit, exit_code) {
+        (Some(prev), now) if prev != now => Some((prev, now)),
+        _ => None,
+    };
+    if let Some((prev, now)) = contradicted {
+        if matches!(claim.state, State::Verified | State::Pending) {
+            claim.state = State::Suspect;
+        }
+        store.write_claim(&mut claim)?;
+        print!("{}", output::render_claim(&claim, store, fmt)?);
+        return Err(anyhow!(
+            "rerun contradicts prior evidence on claim #{}: stored exit_code={}, fresh exit_code={}.\nclaim flipped to suspect. write a new claim and refute this one if the contradiction is real, or investigate the rerun environment if it is spurious.",
+            seq, prev, now,
+        ));
+    }
     store.write_claim(&mut claim)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);
     Ok(())
@@ -947,11 +990,22 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
 fn evidence_extras_diff(e: &Evidence) -> String {
     match e.method {
         EvidenceMethod::StatTest => format!(
-            " p={} n={}",
+            " p={} n={} src={}",
             e.p_value.map(|v| v.to_string()).unwrap_or("?".into()),
-            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into())
+            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.data_source.map(|d| d.as_str()).unwrap_or("?")
         ),
-        EvidenceMethod::CodeTest => format!(" exit={}", e.exit_code.unwrap_or(-1)),
+        EvidenceMethod::PropTest => format!(" exit={}", e.exit_code.unwrap_or(-1)),
+        EvidenceMethod::IntegrationTest => format!(
+            " exit={} target={}",
+            e.exit_code.unwrap_or(-1),
+            e.target.as_deref().unwrap_or("?")
+        ),
+        EvidenceMethod::ReplayTest => format!(
+            " exit={} dataset={}",
+            e.exit_code.unwrap_or(-1),
+            e.dataset.as_deref().unwrap_or("?")
+        ),
         _ => String::new(),
     }
 }
@@ -970,6 +1024,10 @@ fn diff_evidence_ai(claim: &Claim) -> Result<String> {
                 "p_value": e.p_value,
                 "sample_size": e.sample_size,
                 "exit_code": e.exit_code,
+                "target": e.target,
+                "dataset": e.dataset,
+                "dataset_hash": e.dataset_hash,
+                "data_source": e.data_source.map(|d| d.as_str()),
                 "note": e.note,
             })
         })
@@ -1020,7 +1078,12 @@ fn refute_evidence(by: u64, reason: String) -> Evidence {
         from_claims: vec![by],
         ref_hash: None,
         cmd: None,
+        cmd_hash: None,
         stdout_hash: None,
+        target: None,
+        dataset: None,
+        dataset_hash: None,
+        data_source: None,
         recorded_at: Utc::now(),
     }
 }
@@ -1051,9 +1114,24 @@ fn render_cascade_note(store: &mut Store, seq: u64, cascade: bool) -> Result<Str
 }
 
 fn cmd_refute(store: &mut Store, a: RefuteArgs, fmt: OutputFormat) -> Result<()> {
+    refuse_in_repair_mode("refute")?;
     let seq = store.resolve(&a.id)?;
+    if a.by == seq {
+        return Err(anyhow!(
+            "refute: claim #{} cannot refute itself. self-refutation is incoherent — if the claim is wrong, write a different claim that contradicts it and refute via that.",
+            seq
+        ));
+    }
     let mut claim = store.read_claim(seq)?;
-    let _replacement = store.read_claim(a.by)?;
+    let replacement = store.read_claim(a.by)?;
+    if !matches!(replacement.state, State::Verified) {
+        return Err(anyhow!(
+            "refute: --by #{} is {} (not verified). a refutation must replace a claim with a verified counter-claim. either verify #{} first or write a different replacement.",
+            a.by,
+            replacement.state.as_str(),
+            a.by
+        ));
+    }
     claim.state = State::Refuted;
     claim.edges.push(Edge {
         r#type: EdgeType::Refutes,
@@ -1076,23 +1154,15 @@ fn cmd_show(store: &Store, id: String, fmt: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
-    if exclude.is_empty() {
-        return false;
-    }
-    match &c.agent {
-        Some(a) => exclude.iter().any(|e| e == a),
-        None => false,
-    }
-}
-
 fn cmd_suspect(store: &Store, fmt: OutputFormat, exclude_agent: &[String]) -> Result<()> {
     let seqs = store.all_seqs()?;
     let claims: Vec<Claim> = seqs
         .iter()
-        .filter_map(|s| store.read_claim(*s).ok())
+        .map(|s| store.read_claim(*s))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
         .filter(|c| c.state == State::Suspect)
-        .filter(|c| !agent_excluded(c, exclude_agent))
+        .filter(|c| !output::agent_excluded(c, exclude_agent))
         .collect();
     if matches!(fmt, OutputFormat::Ai) {
         let arr: Vec<_> = claims

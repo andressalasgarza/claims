@@ -1,4 +1,4 @@
-use crate::models::{Claim, Edge, EdgeType, Evidence, State};
+use crate::models::{Claim, EdgeType, Evidence, State};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
 use std::fs;
@@ -6,6 +6,16 @@ use std::path::{Path, PathBuf};
 
 pub const STORE_DIR: &str = ".claims";
 pub const INDEX_FILE: &str = "index.db";
+
+/// canonical content hash: serialize the claim with content_hash blanked,
+/// then blake3. write side captures it; read side recomputes and compares.
+fn canonical_content_hash(claim: &Claim) -> String {
+    let mut to_serialize = claim.clone();
+    to_serialize.content_hash = None;
+    let canonical = serde_json::to_string(&to_serialize)
+        .expect("Claim serializes (Serialize is derived)");
+    blake3::hash(canonical.as_bytes()).to_hex().to_string()
+}
 
 pub struct Store {
     pub root: PathBuf,
@@ -31,10 +41,7 @@ impl Store {
     }
 
     pub fn write_claim(&mut self, claim: &mut Claim) -> Result<()> {
-        let mut to_serialize = claim.clone();
-        to_serialize.content_hash = None;
-        let canonical = serde_json::to_string(&to_serialize)?;
-        let hash = blake3::hash(canonical.as_bytes()).to_hex().to_string();
+        let hash = canonical_content_hash(claim);
         claim.content_hash = Some(hash);
 
         let path = self.claim_path(claim.seq);
@@ -49,11 +56,45 @@ impl Store {
         self.root.join(format!("{:06}.json", seq))
     }
 
+    /// read a claim from disk and verify its content_hash matches the canonical
+    /// blake3 of its serialized form (with content_hash blanked). hard error on
+    /// mismatch or missing hash. without this check, a hand-written
+    /// .claims/*.json with state=verified, agent=anyone, content_hash=fake passes
+    /// `clms reindex` and shows up in `clms show` as legitimate.
     pub fn read_claim(&self, seq: u64) -> Result<Claim> {
         let path = self.claim_path(seq);
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("claim #{} not found at {}", seq, path.display()))?;
         let c: Claim = serde_json::from_str(&raw)?;
+        match c.content_hash.as_deref() {
+            None => {
+                if std::env::var("CLAIMS_REPAIR").is_ok() {
+                    return Ok(c);
+                }
+                return Err(anyhow!(
+                    "claim #{} at {} has no content_hash. either it was hand-written outside `clms`, \
+or it predates the integrity field. set CLAIMS_REPAIR=1 to read anyway, then re-save with `clms reindex`.",
+                    seq,
+                    path.display(),
+                ));
+            }
+            Some(stored) => {
+                let recomputed = canonical_content_hash(&c);
+                if stored != recomputed {
+                    if std::env::var("CLAIMS_REPAIR").is_ok() {
+                        return Ok(c);
+                    }
+                    return Err(anyhow!(
+                        "claim #{} content_hash mismatch — file has been tampered.\n  stored:     {}\n  recomputed: {}\n  path:       {}\n\nthe json on disk does not match the hash it claims. someone edited the file outside `clms`. \
+set CLAIMS_REPAIR=1 to read anyway (use only if you accept the tampered content), then re-save.",
+                        seq,
+                        &stored[..16.min(stored.len())],
+                        &recomputed[..16],
+                        path.display(),
+                    ));
+                }
+            }
+        }
         Ok(c)
     }
 
@@ -160,57 +201,319 @@ impl Store {
     }
 }
 
-pub fn validate_evidence(ev: &Evidence) -> Result<()> {
+/// dispatch to per-method validator. behavior preserved exactly; the only
+/// change vs pre-refactor is that each per-method block is now its own fn,
+/// so cyclomatic complexity is bounded per validator instead of stacking.
+pub fn validate_evidence(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()> {
     use crate::models::EvidenceMethod::*;
     match ev.method {
-        StatTest => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("stat-test requires --ref <path>"));
-            }
-            if ev.p_value.is_none() {
-                return Err(anyhow!("stat-test requires --p-value <float>"));
-            }
-            if ev.sample_size.is_none() {
-                return Err(anyhow!("stat-test requires --sample-size <int>"));
-            }
-            if ev.test_type.is_none() {
-                return Err(anyhow!(
-                    "stat-test requires --test-type <name> (e.g. ks, t, chi2)"
-                ));
-            }
+        PropTest => validate_prop_test(ev),
+        IntegrationTest => validate_integration_test(ev),
+        ReplayTest => validate_replay_test(ev),
+        StatTest => validate_stat_test(ev),
+        Observed => validate_observed(ev),
+        Documented => validate_documented(ev),
+        Derived => validate_derived(ev, store, current_seq),
+    }
+}
+
+#[inline]
+fn missing_ref(ev: &Evidence) -> bool {
+    ev.r#ref.is_empty()
+}
+
+#[inline]
+fn missing_str(opt: &Option<String>) -> bool {
+    opt.as_deref().unwrap_or("").trim().is_empty()
+}
+
+fn validate_prop_test(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("prop-test requires --ref <path-to-test-file>"));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "prop-test requires --cmd \"<shell cmd that ran the proptest/quickcheck/fuzz>\". the cmd is executed at verify time and the actual exit_code is captured."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_integration_test(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("integration-test requires --ref <path-to-test-file>"));
+    }
+    if missing_str(&ev.target) {
+        return Err(anyhow!(
+            "integration-test requires --target <url-or-host>. the test must hit a real external system the author does not control; without --target the falsification surface is undocumented."
+        ));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "integration-test requires --cmd \"<shell cmd that probed --target>\"."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_replay_test(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("replay-test requires --ref <path-to-strategy-or-replay-script>"));
+    }
+    let dataset = ev.dataset.as_deref().unwrap_or("").trim();
+    if dataset.is_empty() {
+        return Err(anyhow!(
+            "replay-test requires --dataset <path>. the dataset must be real-world capture (not synthetic); it is content-hashed for tamper-evidence."
+        ));
+    }
+    if ev.dataset_hash.is_none() {
+        return Err(anyhow!(
+            "replay-test requires the dataset at --dataset to exist as a local file at verify time so it can be content-hashed. path '{}' could not be hashed.",
+            dataset
+        ));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "replay-test requires --cmd \"<shell cmd that replayed --dataset through --ref>\"."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stat_test(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("stat-test requires --ref <path>"));
+    }
+    let p = ev.p_value.ok_or_else(|| anyhow!("stat-test requires --p-value <float>"))?;
+    if !(0.0..=1.0).contains(&p) || p.is_nan() {
+        return Err(anyhow!(
+            "stat-test --p-value must be in [0.0, 1.0] (got {}). a p-value is a probability — outside that range it is not a p-value.",
+            p
+        ));
+    }
+    let n = ev
+        .sample_size
+        .ok_or_else(|| anyhow!("stat-test requires --sample-size <int>"))?;
+    if n < 2 {
+        return Err(anyhow!(
+            "stat-test --sample-size must be >= 2 (got {}). a single sample (or zero) cannot falsify a distributional claim.",
+            n
+        ));
+    }
+    if ev.test_type.is_none() {
+        return Err(anyhow!(
+            "stat-test requires --test-type <name> (e.g. ks, t, chi2)"
+        ));
+    }
+    if ev.data_source.is_none() {
+        return Err(anyhow!(
+            "stat-test requires --data-source <real|live>. simulated/synthetic data is refused: it cannot falsify a claim about reality."
+        ));
+    }
+    Ok(())
+}
+
+/// observed --ref must be one of:
+///   - an existing local file (hashable; the H17 path will content_hash it)
+///   - a URL with a recognized scheme (http/https/file/ftp/ssh/git)
+///   - a content-address: sha256:HEX / blake3:HEX / sha1:HEX (any hex case)
+///
+/// random strings like "foo" or "my notes" are refused. without this check
+/// observed degrades to "agent typed any string" and provides no auditable
+/// surface for refutation.
+pub fn ref_shape_acceptable(s: &str) -> bool {
+    if std::path::Path::new(s).exists() {
+        return true;
+    }
+    let recognized_url_schemes = [
+        "http://", "https://", "file://", "ftp://", "ftps://", "ssh://", "git://", "ws://", "wss://",
+    ];
+    if recognized_url_schemes.iter().any(|p| s.starts_with(p)) {
+        return true;
+    }
+    // content-address: <hashname>:<hex>
+    if let Some((scheme, hex)) = s.split_once(':') {
+        if matches!(scheme, "sha256" | "sha1" | "sha512" | "blake3" | "md5")
+            && !hex.is_empty()
+            && hex.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return true;
         }
-        CodeTest => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("code-test requires --ref <path-or-cmd>"));
+    }
+    false
+}
+
+fn validate_observed(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("observed requires --ref <path-url-or-hash>"));
+    }
+    if !ref_shape_acceptable(&ev.r#ref) {
+        return Err(anyhow!(
+            "observed --ref '{}' is not auditable. it must be one of: (a) an existing local file path, (b) a URL (http/https/file/ftp/ssh/git/ws), or (c) a content-address (sha256:HEX / blake3:HEX / sha1:HEX). bare strings are refused because they provide no surface for refutation.",
+            ev.r#ref
+        ));
+    }
+    Ok(())
+}
+
+/// is this --target a loopback or RFC1918 / link-local / unspecified address?
+/// rejects: localhost, 127/8, 0/8, 10/8, 172.16/12, 192.168/16, 169.254/16,
+/// ::1, fc00::/7, fe80::/10. matches by hostname *or* parsed IP literal so
+/// both `https://localhost:8080/health` and `http://127.0.0.1` are caught.
+pub fn target_is_local(target: &str) -> bool {
+    // strip scheme + path: "https://host:port/path" -> "host:port" -> "host"
+    let after_scheme = target.split_once("://").map(|(_, r)| r).unwrap_or(target);
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    let host = match host_port.rsplit_once(':') {
+        Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => host_port,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if matches!(
+        host.to_ascii_lowercase().as_str(),
+        "localhost" | "localhost.localdomain" | "" | "::" | "::1"
+    ) {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.octets()[0] == 0
             }
-            if ev.exit_code.is_none() {
-                return Err(anyhow!("code-test requires --exit-code <int>"));
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback() || v6.is_unspecified() || {
+                    let s = v6.segments()[0];
+                    // fc00::/7 (unique-local) or fe80::/10 (link-local)
+                    (s & 0xfe00) == 0xfc00 || (s & 0xffc0) == 0xfe80
+                }
             }
+        };
+    }
+    false
+}
+
+fn validate_documented(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("documented requires --ref <url>"));
+    }
+    if missing_str(&ev.quote) {
+        return Err(anyhow!(
+            "documented requires --quote \"<exact text from doc>\""
+        ));
+    }
+    Ok(())
+}
+
+/// derived parent validation. before this commit, the only check was
+/// `from_claims.len() >= 2`. that left several trivial bypasses in production:
+/// same id twice, non-existent parents, unverified parents (PENDING),
+/// refuted parents, and self-derivation (cite yourself to verify yourself).
+/// all now refuse with specific messages. derived must compose only over
+/// claims that have actually crossed the falsifiability bar.
+fn validate_derived(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()> {
+    if ev.from_claims.len() < 2 {
+        return Err(anyhow!(
+            "derived requires at least two --from <claim_id> entries"
+        ));
+    }
+
+    // self-derivation
+    if ev.from_claims.contains(&current_seq) {
+        return Err(anyhow!(
+            "derived: claim #{} cannot cite itself in --from. self-derivation is circular.",
+            current_seq
+        ));
+    }
+
+    // dedup
+    let mut seen = std::collections::HashSet::new();
+    for id in &ev.from_claims {
+        if !seen.insert(*id) {
+            return Err(anyhow!(
+                "derived: --from #{} listed twice. each parent claim must be unique.",
+                id
+            ));
         }
-        Observed => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("observed requires --ref <path-url-or-hash>"));
-            }
+    }
+
+    // every parent must exist and be verified
+    for id in &ev.from_claims {
+        let parent = store.read_claim(*id).map_err(|_| {
+            anyhow!(
+                "derived: --from #{} does not exist. cannot derive from a non-existent claim.",
+                id
+            )
+        })?;
+        if !matches!(parent.state, State::Verified) {
+            return Err(anyhow!(
+                "derived: --from #{} is {} (not verified). derived claims must compose only over verified parents — deriving from {} is unsound.",
+                id,
+                parent.state.as_str(),
+                parent.state.as_str()
+            ));
         }
-        Documented => {
-            if ev.r#ref.is_empty() {
-                return Err(anyhow!("documented requires --ref <url>"));
-            }
-            if ev.quote.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(anyhow!(
-                    "documented requires --quote \"<exact text from doc>\""
-                ));
-            }
-        }
-        Derived => {
-            if ev.from_claims.len() < 2 {
-                return Err(anyhow!(
-                    "derived requires at least two --from <claim_id> entries"
-                ));
-            }
+    }
+
+    // cycle detection: walking from each --from parent, the current claim must
+    // not be reachable through any chain of derived edges. without this, X can
+    // derive from {Y, Z} while Y derives from {X, Z} — both verify, and the
+    // "derived" relation is no longer a DAG. the falsifiability story collapses
+    // because each claim's evidence ultimately rests on its own conclusion.
+    let mut visited = std::collections::HashSet::new();
+    for parent_id in &ev.from_claims {
+        if let Some(cycle_path) = derived_cycle_path(store, *parent_id, current_seq, &mut visited)? {
+            // cycle_path is [parent, ..., target]; prepend current_seq for the
+            // human-readable round trip current_seq → parent → … → current_seq.
+            let path_str = std::iter::once(current_seq)
+                .chain(cycle_path.into_iter())
+                .map(|s| format!("#{}", s))
+                .collect::<Vec<_>>()
+                .join(" → ");
+            return Err(anyhow!(
+                "derived: cycle detected. claim #{} would derive from #{}, but #{} is already (transitively) derived from #{}.\n  cycle: {}\n\nderived edges must form a DAG. break the cycle by refuting one of the participants or by re-grounding it in non-derived evidence.",
+                current_seq, parent_id, parent_id, current_seq,
+                path_str,
+            ));
         }
     }
     Ok(())
+}
+
+/// DFS from `start` looking for `target`. returns Some(path-from-start-to-target)
+/// if a cycle exists, None otherwise. `visited` is shared across calls so we
+/// only walk each parent once per validate_derived call (linear in graph size).
+fn derived_cycle_path(
+    store: &Store,
+    start: u64,
+    target: u64,
+    visited: &mut std::collections::HashSet<u64>,
+) -> Result<Option<Vec<u64>>> {
+    if start == target {
+        return Ok(Some(vec![start]));
+    }
+    if !visited.insert(start) {
+        return Ok(None);
+    }
+    let claim = match store.read_claim(start) {
+        Ok(c) => c,
+        Err(_) => return Ok(None), // missing parent already rejected upstream
+    };
+    for ev in &claim.evidence {
+        if !matches!(ev.method, crate::models::EvidenceMethod::Derived) {
+            continue;
+        }
+        for next in &ev.from_claims {
+            if let Some(mut sub) = derived_cycle_path(store, *next, target, visited)? {
+                sub.insert(0, start);
+                return Ok(Some(sub));
+            }
+        }
+    }
+    Ok(None)
 }
 
 pub fn hash_ref_if_local(r: &str) -> Option<String> {
@@ -221,6 +524,22 @@ pub fn hash_ref_if_local(r: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// canonical hash of an Evidence record's *user-supplied* fields. used for
+/// dedup at append time. the auto-captured fields (recorded_at, ref_hash,
+/// stdout_hash, dataset_hash, cmd_hash) are blanked before hashing so two
+/// identical user invocations collapse to the same key, but a rerun that
+/// captures a different exit_code stays distinct.
+pub fn evidence_user_hash(ev: &Evidence) -> String {
+    let mut canon = ev.clone();
+    canon.recorded_at = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap_or_else(chrono::Utc::now);
+    canon.ref_hash = None;
+    canon.stdout_hash = None;
+    canon.dataset_hash = None;
+    canon.cmd_hash = None;
+    let s = serde_json::to_string(&canon).unwrap_or_default();
+    blake3::hash(s.as_bytes()).to_hex().to_string()
 }
 
 /// returns Some((prior_hash, prior_recorded_at_rfc3339)) if `claim` already has
@@ -244,6 +563,67 @@ pub fn detect_drift(
     None
 }
 
+/// returns Some((prior_ref, prior_recorded_at_rfc3339)) if `claim` has prior
+/// evidence whose ref_hash equals the new ref_hash but whose ref *string*
+/// differs. this is the rename-pattern dodge: agent copies test.py to
+/// test_v2.py (or moves it, or symlinks), then verifies the new path as if it
+/// were a distinct piece of evidence. without this check, dedup (which keys on
+/// ref string) accepts the duplicate-content-under-different-name as
+/// independent evidence, inflating the evidence count for free.
+///
+/// pairs with detect_drift (same ref + different hash) and detect_dataset_drift
+/// (same dataset path + different hash). together they close the rename and
+/// content-swap branches of evidence-laundering.
+pub fn detect_rename(
+    claim: &Claim,
+    new_ref: &str,
+    new_hash: &Option<String>,
+) -> Option<(String, String)> {
+    let new_hash = new_hash.as_deref()?;
+    for prior in &claim.evidence {
+        if prior.r#ref == new_ref {
+            continue; // same ref → handled by detect_drift
+        }
+        if let Some(prior_hash) = &prior.ref_hash {
+            if prior_hash == new_hash {
+                return Some((prior.r#ref.clone(), prior.recorded_at.to_rfc3339()));
+            }
+        }
+    }
+    None
+}
+
+/// returns Some((prior_hash, prior_recorded_at_rfc3339)) if `claim` already has
+/// replay-test evidence with the same `dataset` path but a different content
+/// hash. without this check, an agent can swap the bytes of a parquet file
+/// (or any other dataset) between two `replay-test` verifies and clms records
+/// both as if the underlying data hadn't changed. detect_drift only catches
+/// drift on the ref string; this catches drift on the dataset payload.
+pub fn detect_dataset_drift(
+    claim: &Claim,
+    new_dataset: Option<&str>,
+    new_dataset_hash: &Option<String>,
+) -> Option<(String, String, String)> {
+    let new_dataset = new_dataset?;
+    let new_hash = new_dataset_hash.as_deref()?;
+    for prior in &claim.evidence {
+        let prior_ds = match prior.dataset.as_deref() {
+            Some(s) if s == new_dataset => s,
+            _ => continue,
+        };
+        if let Some(prior_hash) = &prior.dataset_hash {
+            if prior_hash != new_hash {
+                return Some((
+                    prior_ds.to_string(),
+                    prior_hash.clone(),
+                    prior.recorded_at.to_rfc3339(),
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// run a shell command, return (exit_code, stdout_bytes).
 pub fn run_cmd(cmd: &str) -> Result<(i32, Vec<u8>)> {
     let out = std::process::Command::new("sh")
@@ -255,25 +635,39 @@ pub fn run_cmd(cmd: &str) -> Result<(i32, Vec<u8>)> {
 }
 
 /// find the latest evidence on a claim that has a stored cmd. used by `rerun`.
+/// any method that reports `is_runnable() == true` qualifies.
 pub fn latest_runnable_evidence(claim: &Claim) -> Option<&Evidence> {
     claim
         .evidence
         .iter()
         .rev()
-        .find(|e| e.cmd.is_some() && matches!(e.method, crate::models::EvidenceMethod::CodeTest | crate::models::EvidenceMethod::StatTest))
+        .find(|e| e.cmd.is_some() && e.method.is_runnable())
 }
 
+/// flip transitive dependents of `seq` from Verified|Pending to Suspect.
+/// returns the seqs that were actually flipped (not all dependents). callers
+/// rely on the returned vec to render an honest cascade message; previously
+/// this returned every dependent regardless of whether it changed state, which
+/// caused `clms refute --cascade` to lie:
+///
+///   cascade: 1 dependent claim(s) auto-flagged suspect: [42]
+///
+/// where claim 42 was Unverifiable and stayed Unverifiable. the message
+/// claimed an action that did not happen. now the message reports only
+/// claims whose state actually changed.
 pub fn cascade_suspect(store: &mut Store, seq: u64) -> Result<Vec<u64>> {
     let dependents = store.transitive_dependents(seq)?;
+    let mut flipped = Vec::new();
     for dep in &dependents {
         let mut c = store.read_claim(*dep)?;
-        if c.state == State::Verified || c.state == State::Pending {
+        if matches!(c.state, State::Verified | State::Pending) {
             c.state = State::Suspect;
             c.updated_at = chrono::Utc::now();
             store.write_claim(&mut c)?;
+            flipped.push(*dep);
         }
     }
-    Ok(dependents)
+    Ok(flipped)
 }
 
 const SCHEMA: &str = r#"
@@ -301,5 +695,3 @@ CREATE TABLE IF NOT EXISTS edges (
 );
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_seq);
 "#;
-
-pub fn _used(_: &Edge) {}

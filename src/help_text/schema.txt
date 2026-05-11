@@ -1,0 +1,10 @@
+
+EXAMPLES
+  clms schema                          # human-readable schema overview
+  clms --format ai schema              # full json schema for agent self-discovery
+
+NOTES
+  emits the requirement matrix per evidence method (mirrors what `verify`
+  enforces at runtime), plus enum values for states, confidence tiers, edge
+  types, and output formats. cache it once per agent session and you can
+  build valid `verify` invocations without trial-and-error.

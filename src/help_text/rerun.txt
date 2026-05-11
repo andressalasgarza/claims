@@ -1,0 +1,21 @@
+
+EXAMPLES
+  clms rerun 1                       # re-execute stored cmd, append evidence
+  clms rerun 1 --acknowledge-drift   # acknowledge if test file changed
+
+NOTES
+  - requires the original verify to have stored a --cmd. if missing, errors.
+  - finds the latest evidence on the claim whose method is runnable
+    (prop-test, integration-test, replay-test, or stat-test) and has a
+    stored cmd. re-hashes the cmd and refuses if it has been tampered
+    since verify time (cmd_hash gate). re-executes via `sh -c "<cmd>"`,
+    captures exit code + stdout hash + new ref_hash, appends as fresh
+    evidence. integration-test --target and replay-test --dataset are
+    carried forward from the prior.
+  - if the test file's content changed since prior evidence, drift is
+    detected and rerun refuses with exit 1 unless --acknowledge-drift is set.
+  - contradiction-gate: if the fresh exit_code disagrees with the stored
+    exit_code from the prior verify, the claim auto-flips Verified|Pending
+    → Suspect, the new evidence is recorded (audit trail), and rerun exits
+    1. write a new claim and refute this one if the contradiction is real.
+  - rerun is refused under CLAIMS_REPAIR=1 (repair mode is read-only).

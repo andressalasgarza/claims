@@ -1,0 +1,109 @@
+
+EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
+  prop-test         --ref --cmd                       [--exit-code predictive]
+  integration-test  --ref --cmd --target <url-or-host> [--exit-code predictive]
+  replay-test       --ref --cmd --dataset <path>      [--exit-code predictive]
+  stat-test         --ref --p-value --sample-size --test-type --data-source <real|live>
+                                                       [--cmd recommended]
+  observed          --ref                              (file | URL | sha256:HEX)
+  documented        --ref --quote "<exact text from doc>"
+  derived           --from <id> --from <id>            (min 2, each must exist + be verified)
+
+CMD EXECUTION (prop-test, integration-test, replay-test)
+  --cmd is EXECUTED at verify time. clms captures the actual exit_code and
+  hashes stdout. --exit-code is optional and reinterpreted as the agent's
+  *predicted* exit; a mismatch with the actual value is a hard error. omit it
+  to silently capture whatever the cmd returns.
+
+REF / TARGET SHAPE
+  observed --ref must be one of: (a) an existing local file path, (b) a URL
+  with a recognized scheme (http/https/file/ftp/ssh/git/ws/wss), or (c) a
+  content-address like sha256:HEX / blake3:HEX. bare strings are refused.
+
+  integration-test --target must be a real external system. loopback (127.x,
+  ::1, localhost), RFC1918 (10.x, 192.168.x, 172.16-31.x), link-local, and
+  unspecified addresses are refused. pass --allow-local if you intentionally
+  want to record a local smoketest as integration evidence.
+
+REFUSED METHODS (parse-time error)
+  unit-test  confirmatory only. you picked the input AND the expected output;
+             the test cannot disagree with you. use prop-test for randomized
+             input exploration, integration-test for real systems, replay-test
+             for real captured data, or observed for a single artifact.
+  code-test  removed in schema 1.1. ambiguous about falsification surface.
+             pick one of: prop-test | integration-test | replay-test.
+  sim-test   synthetic data is circular w/ the assumptions you're testing.
+             use stat-test --data-source=real, or file as derived citing the
+             simulator's underlying claims.
+
+EXAMPLES
+  # property-based test (randomized input generator)
+  # --cmd is executed; --exit-code omitted, actual captured silently.
+  clms verify 1 --method prop-test --ref ./tests/sort_props.rs \
+    --cmd "cargo test --release sort_props -- --nocapture"
+
+  # same, but with predicted exit asserted (mismatch → hard error)
+  clms verify 1 --method prop-test --ref ./tests/sort_props.rs --exit-code 0 \
+    --cmd "cargo test --release sort_props -- --nocapture"
+
+  # integration test against a real external system
+  clms verify 2 --method integration-test --ref ./tests/poly_api.py \
+    --target https://clob.polymarket.com \
+    --cmd "python3 ./tests/poly_api.py"
+
+  # local CI smoketest (lower confidence; explicit --allow-local)
+  clms verify 2 --method integration-test --ref ./tests/health.sh \
+    --target http://localhost:8080 --allow-local \
+    --cmd "./tests/health.sh"
+
+  # replay test against frozen real-world capture
+  clms verify 3 --method replay-test --ref ./strategies/mm_v3.py \
+    --dataset ./data/binance_btc_l2_2024-03.parquet \
+    --cmd "python3 ./strategies/mm_v3.py --replay ./data/binance_btc_l2_2024-03.parquet"
+
+  # statistical test on real samples
+  clms verify 4 --method stat-test --ref ./test.py \
+    --test-type ks --p-value 0.003 --sample-size 4821 --data-source real \
+    --cmd "python3 ./test.py"
+
+  # documented source
+  clms verify 5 --method documented --ref https://docs.poly.com/api/limits \
+    --quote "default rate limit is 100 requests per minute"
+
+FALSIFICATION SURFACES
+  prop-test         randomized input generator finds counterexamples
+  integration-test  the real external system at --target can disagree
+  replay-test       frozen real-world data at --dataset can disagree
+  stat-test         real/live samples can fail to reject the null
+  observed          the artifact can be missing or contradictory
+  documented        the quote can be missing, edited, or contradicted
+  derived           upstream claims can be refuted (cascade)
+
+DRIFT (three checks, all gated by --acknowledge-drift)
+  - ref drift:      same --ref string, different content hash. the file
+                    behind the ref changed since prior evidence.
+  - dataset drift:  same --dataset path, different content hash. the bytes
+                    behind the path changed (parquet/csv swap).
+  - rename drift:   same content hash, different --ref string. the agent
+                    copied/renamed/symlinked an existing file under a new
+                    path; the bytes are identical but the dedup keyed on
+                    the ref string would not catch it.
+  any drift refuses with exit 1 and shows the prior hash + recorded_at. add
+  --acknowledge-drift if the iteration is intentional. if the new result
+  contradicts the prior conclusion, you should refute the claim and write a
+  new one instead of acknowledging drift.
+
+ENV VARS (provenance + repair)
+  CLAIMS_BACKFILL=1   required to use --git-sha or --created-at overrides on
+                      `clms add`. claims born under this flag are stamped
+                      `backfilled: true` and rendered with [backfilled] in
+                      human output.
+  CLAIMS_REPAIR=1     disables the content_hash gate in read_claim for
+                      forensic recovery (show / diff-evidence / timeline /
+                      reindex). mutating commands (verify / rerun / refute)
+                      refuse under repair mode — unset it after fixing
+                      records before re-mutating state.
+
+CONFIDENCE
+  auto-derived from method. cannot be set manually. add stronger evidence
+  later (e.g. stat-test on top of documented) to bump confidence tier.

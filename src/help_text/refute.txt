@@ -1,0 +1,20 @@
+
+EXAMPLES
+  clms refute 1 --by 7 --reason "lookahead bias in original test"
+  clms refute 1 --by 7 --reason "..." --cascade   # auto-suspect dependents
+
+NOTES
+  - <id> = claim being refuted. --by <id> = the claim that supersedes it.
+  - the replacement claim must already exist AND be in state `verified`.
+    refuting --by a pending/suspect/refuted/unverifiable claim is refused:
+    a refutation replaces a claim with a *verified* counter-claim, not
+    with a hypothetical one. typical workflow: write the new claim with
+    `clms add ...`, verify it, THEN refute the old one.
+  - self-refutation (--by == <id>) is refused. if the claim is wrong,
+    write a different claim that contradicts it and refute via that.
+  - --cascade walks the depends_on graph and flags every transitive
+    dependent of <id> as suspect. the cascade message only reports claims
+    that actually flipped state (Unverifiable claims pass through
+    unchanged). without --cascade you get a warning listing them but no
+    auto-flag. use --cascade unless you have a reason not to.
+  - refute is refused under CLAIMS_REPAIR=1 (repair mode is read-only).

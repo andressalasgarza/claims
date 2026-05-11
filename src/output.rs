@@ -83,6 +83,7 @@ fn render_claim_ai(c: &Claim, store: &Store) -> Result<String> {
         "depends_on": deps_of(c),
         "dependents": dependents_seqs(store, c.seq)?,
         "evidence_count": c.evidence.len(),
+        "backfilled": c.backfilled,
     });
     Ok(serde_json::to_string(&val)?)
 }
@@ -90,12 +91,23 @@ fn render_claim_ai(c: &Claim, store: &Store) -> Result<String> {
 fn evidence_extras(e: &Evidence) -> String {
     match e.method {
         EvidenceMethod::StatTest => format!(
-            " [{}, p={}, n={}]",
+            " [{}, p={}, n={}, src={}]",
             e.test_type.as_deref().unwrap_or("?"),
             e.p_value.map(|v| v.to_string()).unwrap_or("?".into()),
-            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into())
+            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.data_source.map(|d| d.as_str()).unwrap_or("?")
         ),
-        EvidenceMethod::CodeTest => format!(" [exit={}]", e.exit_code.unwrap_or(-1)),
+        EvidenceMethod::PropTest => format!(" [exit={}]", e.exit_code.unwrap_or(-1)),
+        EvidenceMethod::IntegrationTest => format!(
+            " [exit={}, target={}]",
+            e.exit_code.unwrap_or(-1),
+            e.target.as_deref().unwrap_or("?")
+        ),
+        EvidenceMethod::ReplayTest => format!(
+            " [exit={}, dataset={}]",
+            e.exit_code.unwrap_or(-1),
+            e.dataset.as_deref().unwrap_or("?")
+        ),
         EvidenceMethod::Documented => {
             let q = e.quote.as_deref().unwrap_or("");
             let q = if q.len() > 60 { &q[..60] } else { q };
@@ -107,12 +119,14 @@ fn evidence_extras(e: &Evidence) -> String {
 }
 
 fn header_block(c: &Claim) -> String {
+    let backfill_tag = if c.backfilled { " [backfilled]" } else { "" };
     let mut s = format!(
-        "#{:<4} [{} · {}]  {}\n",
+        "#{:<4} [{} · {}]  {}{}\n",
         c.seq,
         c.state.as_str(),
         confidence_str(c),
-        c.text
+        c.text,
+        backfill_tag,
     );
     s.push_str(&format!(
         "id: {}  agent: {}  session: {}  git: {}\n",
@@ -228,7 +242,9 @@ fn render_claim_human(c: &Claim, store: &Store) -> Result<String> {
     Ok(t.to_string())
 }
 
-fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
+/// shared filter: returns true if claim's agent is in the exclude list.
+/// used by timeline + suspect rendering and by main's cmd_suspect.
+pub(crate) fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
     if exclude.is_empty() {
         return false;
     }
@@ -242,7 +258,9 @@ fn timeline_load(store: &Store, tag: Option<&str>, exclude_agent: &[String]) -> 
     let seqs = store.all_seqs()?;
     let mut claims: Vec<Claim> = seqs
         .iter()
-        .filter_map(|s| store.read_claim(*s).ok())
+        .map(|s| store.read_claim(*s))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
         .filter(|c| match tag {
             Some(t) => c.tags.iter().any(|x| x == t),
             None => true,
@@ -316,7 +334,9 @@ pub fn render_context(
     let seqs = store.all_seqs()?;
     let claims: Vec<Claim> = seqs
         .iter()
-        .filter_map(|s| store.read_claim(*s).ok())
+        .map(|s| store.read_claim(*s))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
         .filter(|c| matches!(c.state, State::Verified))
         .filter(|c| match tag {
             Some(t) => c.tags.iter().any(|x| x == t),

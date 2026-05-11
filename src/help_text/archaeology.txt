@@ -1,0 +1,20 @@
+
+EXAMPLES
+  clms archaeology suggest                          # harvest candidates, print json to stdout
+  clms archaeology suggest --max 5 -o cand.json     # write to file, cap at 5
+  clms archaeology commit --from-plan survivors.json  # ingest curated survivors
+  clms archaeology purge --session backfill-<ts>    # remove a backfill session
+
+v2 CONTRACT
+  archaeology is a CANDIDACY engine, not a verification engine.
+  - phase 1 (suggest): byte-walks source for `// clms-claim:` and `# clms-claim:`
+    annotations. bounded-N (default 10, ceiling 50). NEVER writes claims.
+  - phase 2 (debate): orchestrator-agnostic. pi-subagents reference impl uses the
+    `clms.judge` agent (.pi/agents/clms-judge.md). drop is structural default.
+  - phase 3 (commit): writes `state: pending` claims with archaeology_meta.
+    promotion to verified happens later via `clms verify`. always pending.
+
+SEE ALSO
+  docs/archaeology.md      full design + signal taxonomy + protocol contract
+  clms verify              promote pending claims after archaeology commits them
+  clms context --exclude-agent archaeology   filter backfill from live ctx
