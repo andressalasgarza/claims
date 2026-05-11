@@ -35,14 +35,16 @@ articulate, in ≤80 tokens of `rationale` per survivor:
 2. **what** would change in their behavior if the claim flipped to false
 3. **why** this is monitorable as an *invariant*, not a one-time fact
 4. **how** the claim could be falsified — name a falsifiable evidence method
-   (`prop-test`, `integration-test`, `replay-test`, `stat-test`, `observed`,
-   `documented`, or `derived`) and identify the falsification surface
-   (random generator? real external system? frozen real dataset? real
-   samples? captured artifact? primary-source quote? upstream claims?).
-   if the only plausible verification is a hand-picked single-input single-
-   output assertion ("unit test"), vote drop. clms refuses unit-test,
-   code-test, and sim-test methods at promotion time, so survivors that
-   can't be re-cast as a falsifiable method will block `clms verify`.
+   (`prop-test`, `integration-test`, `replay-test`, `stat-test`,
+   `benchmark`, `estimate`, `observed`, `documented`, or `derived`) and
+   identify the falsification surface (random generator? real external
+   system? frozen real dataset? real samples? measured metric vs threshold?
+   point estimate with CI? captured artifact? primary-source quote?
+   upstream claims?). if the only plausible verification is a hand-picked
+   single-input single-output assertion ("unit test"), vote drop. clms
+   refuses unit-test, code-test, and sim-test methods at promotion time,
+   so survivors that can't be re-cast as a falsifiable method will block
+   `clms verify`.
 
 If you find yourself arguing "this seems true and falsifiable," that is NOT
 sufficient. Many true falsifiable facts are not claims. Stake AND a real

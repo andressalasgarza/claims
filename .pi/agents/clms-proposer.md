@@ -209,7 +209,7 @@ write `.archaeology/proposals.json` with this exact shape:
       "snippet": "<optional short context for the judge>",
       "suggested_evidence": [
         {
-          "method": "prop-test|integration-test|replay-test|stat-test|observed|documented|derived",
+          "method": "prop-test|integration-test|replay-test|stat-test|benchmark|estimate|observed|documented|derived",
           "cmd": "<optional shell command>",
           "ref": "<optional path/url>",
           "note": "<optional human note>"

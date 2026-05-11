@@ -109,6 +109,34 @@ self-tests. that's what your test runner is for.
 
 confidence is always max-tier across attached evidence. you cannot set it manually.
 
+### what makes a method "empirical"?
+
+the empirical bucket is not arbitrary. a method counts as empirical iff it
+clears three structural requirements simultaneously:
+
+1. **runnable.** the method requires `--cmd`. clms executes it at verify
+   time and records the actual `exit_code` + `stdout_hash`. drift is
+   mechanically detectable on rerun.
+2. **structural pass/fail.** clms enforces a specific shape on the evidence
+   row that can refuse the verify outright (exit 0 for prop/integration/
+   replay, `p ∈ [0,1] ∧ n ≥ 2` for stat-test, metric vs threshold in the
+   direction declared per metric for benchmark, point inside CI with
+   `0 < conf < 1` for estimate).
+3. **real data.** `--data-source` must be `real | live`; simulated/synthetic
+   is refused at parse time. methods that don't take `--data-source`
+   (prop / integration / replay) carry the equivalent discipline
+   structurally (real generator, real external `--target`, real-world
+   `--dataset`).
+
+all six post-1.2 empirical methods (`prop-test`, `integration-test`,
+`replay-test`, `stat-test`, `benchmark`, `estimate`) clear all three.
+`observed`, `documented`, and `derived` clear none of them — they accept
+whatever the agent writes, modulo well-formedness checks (artifact exists,
+quote matches the doc, parent claims are verified).
+
+when proposing a new evidence method, test it against the three
+requirements. if it fails any, it does not belong in the empirical tier.
+
 ## evidence: hard requirements (no soft warnings)
 
 each method requires specific fields. missing any → exit 1, no claim is written.

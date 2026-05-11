@@ -1,0 +1,65 @@
+PURPOSE
+  ledger composition snapshot for orchestrators that need to enforce
+  policy ("at least 30% empirical", "no more than 50% observed") without
+  baking that policy into clms.
+
+  clms exposes the counts. xagent reads them and decides whether to
+  refuse the next observed claim and force a real test instead.
+
+WHAT IT COUNTS
+  every run emits two views:
+
+  by_tier   each verified claim counted once at its TOP tier (the max
+            tier across its attached evidence). this is the "ledger
+            discipline" view — what's the strongest evidence each claim
+            actually has?
+
+  by_method evidence rows counted directly. a single claim with 3
+            evidence rows contributes 3 here. this is the "what
+            methods are agents actually using?" view.
+
+  unverified claims (pending / refuted / suspect / unverifiable) appear
+  in by_state but are excluded from tier / method breakdowns — they
+  have no settled tier.
+
+PERCENTAGES
+  percentages are reported alongside every count and are computed
+  against verified-claim total (for by_tier) or total-evidence-rows
+  (for by_method). all four tiers sum to 100% by construction.
+
+RATIOS
+  one ratio is emitted: observed / empirical. this is the
+  "shopping down" signal — agents reaching for cheap evidence (a
+  captured artifact) instead of running a real test. a single ratio
+  beats a wall of pairs.
+
+  prefer percentages for policy thresholds ("min 30% empirical").
+  ratios are nonlinear and degenerate at empirical=0.
+
+EXAMPLES
+  # ledger health, human-readable
+  clms stats
+
+  # same, scoped to a tag
+  clms stats --tag market:btc
+
+  # JSON for xagent's policy validator
+  clms --format ai stats
+
+OUTPUT (ai format)
+  {
+    "total": 68,
+    "verified": 52,
+    "by_state": { "verified": 52, "pending": 8, "refuted": 5, ... },
+    "by_tier": {
+      "empirical":  { "count": 12, "pct": 0.231 },
+      "observed":   { "count": 28, "pct": 0.538 },
+      "documented": {  "count":  6, "pct": 0.115 },
+      "derived":    { "count":  6, "pct": 0.115 }
+    },
+    "by_method": {
+      "prop-test":  { "count": 2,  "pct": 0.025 },
+      ...
+    },
+    "ratios": { "observed_per_empirical": 2.333 }
+  }

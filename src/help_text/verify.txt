@@ -1,4 +1,28 @@
 
+EMPIRICAL TIER (the bar a method must clear to count as empirical)
+  three structural requirements. all three. anything missing -> not empirical.
+
+  1. RUNNABLE.  the method requires --cmd. clms executes it at verify
+                time and records actual exit_code + stdout_hash. drift is
+                mechanically detectable on rerun.
+  2. STRUCTURAL PASS/FAIL.  clms enforces a specific shape on the
+                evidence row that can refuse the verify outright:
+                  prop/integration/replay  exit_code == 0
+                  stat-test                p in [0, 1] AND sample_size >= 2
+                  benchmark                metric_value vs threshold in
+                                           the direction declared per metric
+                  estimate                 ci_lower <= point_value <= ci_upper
+                                           AND 0 < confidence_level < 1
+  3. REAL DATA.  --data-source must be real | live; simulated/synthetic
+                is refused at parse time. methods that don't take
+                --data-source (prop/integration/replay) carry the same
+                discipline structurally (real generator, real external
+                system at --target, real-world capture at --dataset).
+
+  the six methods below all clear this bar. observed / documented /
+  derived do not (no --cmd execution, no structural shape on the artifact
+  beyond well-formedness, no real-data requirement).
+
 EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
   prop-test         --ref --cmd                       [--exit-code predictive]
   integration-test  --ref --cmd --target <url-or-host> [--exit-code predictive]

@@ -16,7 +16,8 @@ STATES
   suspect      a claim it depended on was refuted; needs re-verification
 
 CONFIDENCE TIERS (auto-derived from evidence method)
-  empirical    prop-test | integration-test | replay-test | stat-test  (strongest)
+  empirical    prop-test | integration-test | replay-test | stat-test |
+               benchmark | estimate  (strongest)
   observed     observed (captured runtime artifact)
   documented   official primary source + exact quote
   derived      inference from >= 2 other claims

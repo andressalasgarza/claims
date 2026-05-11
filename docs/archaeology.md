@@ -35,13 +35,17 @@ v2 fixes all three by construction.
 archaeology is a **candidacy engine**, not a verification engine. that
 distinction is the whole game.
 
-### the falsifiability bar (schema 1.1+)
+### the falsifiability bar (schema 1.2+)
 
 as of schema 1.1, clms refuses `unit-test`, `code-test`, and `sim-test` as
-evidence methods at parse time. every empirical claim must be promotable
-via one of: `prop-test` (randomized input generator), `integration-test`
-(real external system at `--target`), `replay-test` (frozen real-world
-`--dataset`), or `stat-test` (real or live samples, simulated refused).
+evidence methods at parse time. as of schema 1.2, the empirical bucket
+holds six methods: `prop-test` (randomized input generator),
+`integration-test` (real external system at `--target`), `replay-test`
+(frozen real-world `--dataset`), `stat-test` (real or live samples,
+simulated refused), `benchmark` (measured metric vs declared threshold
+on held-out real data), and `estimate` (point estimate with declared CI
+on real data). every empirical claim must be promotable via one of those
+six.
 
 this raises the archaeology bar substantively. a candidate that is true,
 stakeholder-relevant, and "falsifiable in principle" but whose only
@@ -58,7 +62,7 @@ now normal for a substantial codebase to harvest 10 candidates and survive
 ```
 phase 1   harvest    rust, in clms              ≤ N candidates
 phase 2   debate     orchestrator-agnostic       drop-is-default judge
-                                                  + falsification-surface gate (schema 1.1+)
+                                                  + falsification-surface gate (schema 1.2+)
 phase 3   commit     rust, in clms               survivors → pending claims
 ```
 
@@ -147,8 +151,8 @@ comment after `clms verify` confirms it.
 - `text` and `where` required; `snippet` and `suggested_evidence` optional
 - `suggested_evidence.method` must be one of the falsifiable methods
   (`prop-test` | `integration-test` | `replay-test` | `stat-test` |
-  `observed` | `documented` | `derived`). `unit-test`, `code-test`, and
-  `sim-test` are rejected at promotion time.
+  `benchmark` | `estimate` | `observed` | `documented` | `derived`).
+  `unit-test`, `code-test`, and `sim-test` are rejected at promotion time.
 - candidate_id is hash-stable across re-runs (kind + text + where), so
   judge transcripts re-attach if you regenerate proposals.json with the
   same content

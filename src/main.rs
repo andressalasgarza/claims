@@ -52,6 +52,7 @@ const REFUTE_HELP: &str = include_str!("help_text/refute.txt");
 const RERUN_HELP: &str = include_str!("help_text/rerun.txt");
 
 const DIFF_HELP: &str = include_str!("help_text/diff.txt");
+const STATS_HELP: &str = include_str!("help_text/stats.txt");
 
 #[derive(Subcommand)]
 enum Cmd {
@@ -96,6 +97,16 @@ enum Cmd {
     /// show the chronological evolution of evidence on a claim.
     #[command(after_help = DIFF_HELP)]
     DiffEvidence { id: String },
+    /// ledger composition snapshot: counts per state, per tier, per method, plus the observed/empirical ratio. for xagent-style policy validators.
+    #[command(after_help = STATS_HELP)]
+    Stats {
+        /// only count claims carrying this tag.
+        #[arg(long)]
+        tag: Option<String>,
+        /// hide claims stamped with these agent values (repeatable).
+        #[arg(long = "exclude-agent")]
+        exclude_agent: Vec<String>,
+    },
     /// dump top-level help + every subcommand's help in a single output. for agent context-stuffing.
     HelpAll,
     /// dump machine-readable schema (commands, evidence-method requirements, enums). for agent self-discovery.
@@ -435,6 +446,16 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Rerun(args) => cmd_rerun(&mut store, args, fmt),
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
+        Cmd::Stats {
+            tag,
+            exclude_agent,
+        } => {
+            print!(
+                "{}",
+                output::render_stats(&store, fmt, tag.as_deref(), &exclude_agent)?
+            );
+            Ok(())
+        }
         Cmd::HelpAll => cmd_help_all(),
         Cmd::Schema { target } => cmd_schema(target, fmt),
         Cmd::InstallAgents { force, dry_run } => cmd_install_agents(fmt, force, dry_run),
@@ -1019,9 +1040,16 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
         ));
     }
     let prior = latest_runnable_evidence(&claim).ok_or_else(|| {
+        use crate::models::METHODS;
+        let runnable_names: Vec<&str> = METHODS
+            .iter()
+            .filter(|m| m.runnable)
+            .map(|m| m.name)
+            .collect();
         anyhow!(
-            "claim #{} has no runnable evidence (need prop-test, integration-test, replay-test, or stat-test with stored --cmd)",
-            seq
+            "claim #{} has no runnable evidence (need one of {} with stored --cmd)",
+            seq,
+            runnable_names.join(", ")
         )
     })?;
     let cmd = prior.cmd.clone().unwrap();
