@@ -83,6 +83,7 @@ fn render_claim_ai(c: &Claim, store: &Store) -> Result<String> {
         "depends_on": deps_of(c),
         "dependents": dependents_seqs(store, c.seq)?,
         "evidence_count": c.evidence.len(),
+        "backfilled": c.backfilled,
     });
     Ok(serde_json::to_string(&val)?)
 }
@@ -118,12 +119,14 @@ fn evidence_extras(e: &Evidence) -> String {
 }
 
 fn header_block(c: &Claim) -> String {
+    let backfill_tag = if c.backfilled { " [backfilled]" } else { "" };
     let mut s = format!(
-        "#{:<4} [{} · {}]  {}\n",
+        "#{:<4} [{} · {}]  {}{}\n",
         c.seq,
         c.state.as_str(),
         confidence_str(c),
-        c.text
+        c.text,
+        backfill_tag,
     );
     s.push_str(&format!(
         "id: {}  agent: {}  session: {}  git: {}\n",

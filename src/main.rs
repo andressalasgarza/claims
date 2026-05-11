@@ -629,6 +629,11 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
         None => Utc::now(),
     };
     let stamp_sha = a.git_sha_override.clone().or_else(git::current_sha);
+    // stamp backfilled=true whenever provenance overrides were actually used
+    // (presence-checked above; CLAIMS_BACKFILL only authorizes them, doesn't
+    // mark the record). future-me reading this claim can then see "this
+    // git_sha and created_at were retroactively asserted, not auto-captured."
+    let backfilled = a.created_at_override.is_some() || a.git_sha_override.is_some();
     let mut claim = Claim {
         schema_version: SCHEMA_VERSION.into(),
         id: Ulid::new(),
@@ -649,6 +654,7 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
         updated_at: stamp_at,
         content_hash: None,
         archaeology_meta: None,
+        backfilled,
     };
     store.write_claim(&mut claim)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);

@@ -348,6 +348,12 @@ pub struct Claim {
     /// without this field deserialize to None and re-serialize without the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archaeology_meta: Option<ArchaeologyMeta>,
+    /// true if the claim was created with --git-sha or --created-at overrides
+    /// under CLAIMS_BACKFILL=1. lets a reviewer distinguish "this is a live
+    /// claim with auto-stamped provenance" from "this provenance was
+    /// retroactively asserted by an agent". additive; absent on old records.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backfilled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -785,6 +785,11 @@ fn build_pending_claim(
             judge_rationale,
             judge_rank,
         }),
+        // archaeology is by definition backfill workflow: the agent is
+        // reconstructing claims about past work, not recording live activity.
+        // marking backfilled=true gives reviewers a structural signal in
+        // addition to the existing archaeology_meta tag.
+        backfilled: true,
     })
 }
 
