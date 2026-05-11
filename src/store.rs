@@ -231,12 +231,9 @@ fn validate_prop_test(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
         return Err(anyhow!("prop-test requires --ref <path-to-test-file>"));
     }
-    if ev.exit_code.is_none() {
-        return Err(anyhow!("prop-test requires --exit-code <int>"));
-    }
     if missing_str(&ev.cmd) {
         return Err(anyhow!(
-            "prop-test requires --cmd \"<shell cmd that ran the proptest/quickcheck/fuzz>\". the cmd must be re-runnable for falsification audit."
+            "prop-test requires --cmd \"<shell cmd that ran the proptest/quickcheck/fuzz>\". the cmd is executed at verify time and the actual exit_code is captured."
         ));
     }
     Ok(())
@@ -245,9 +242,6 @@ fn validate_prop_test(ev: &Evidence) -> Result<()> {
 fn validate_integration_test(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
         return Err(anyhow!("integration-test requires --ref <path-to-test-file>"));
-    }
-    if ev.exit_code.is_none() {
-        return Err(anyhow!("integration-test requires --exit-code <int>"));
     }
     if missing_str(&ev.target) {
         return Err(anyhow!(
@@ -265,9 +259,6 @@ fn validate_integration_test(ev: &Evidence) -> Result<()> {
 fn validate_replay_test(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
         return Err(anyhow!("replay-test requires --ref <path-to-strategy-or-replay-script>"));
-    }
-    if ev.exit_code.is_none() {
-        return Err(anyhow!("replay-test requires --exit-code <int>"));
     }
     let dataset = ev.dataset.as_deref().unwrap_or("").trim();
     if dataset.is_empty() {

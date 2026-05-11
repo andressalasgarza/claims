@@ -41,7 +41,7 @@ Error: data-source 'simulated' refused. simulated/synthetic data cannot falsify 
 === prop-test missing --cmd ===
 + target/release/clms verify 1 --method=prop-test --exit-code=0 --ref=x
 exit=1
-Error: prop-test requires --cmd "<shell cmd that ran the proptest/quickcheck/fuzz>". the cmd must be re-runnable for falsification audit.
+Error: prop-test requires --cmd "<shell cmd that ran the proptest/quickcheck/fuzz>". the cmd is executed at verify time and the actual exit_code is captured.
 
 === integration-test missing --target ===
 + target/release/clms verify 1 --method=integration-test --cmd=echo --exit-code=0 --ref=x

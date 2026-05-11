@@ -729,8 +729,44 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
         ));
     }
     let m = EvidenceMethod::parse(&a.method)?;
-    let ev = build_evidence(&a, m)?;
+    let mut ev = build_evidence(&a, m)?;
     validate_evidence(&ev, store, seq)?;
+    // execute --cmd at verify time for methods that take one. an agent can no
+    // longer pass --exit-code 0 against a command that returns 1; clms runs
+    // the command itself and stores the actual result. the user-supplied
+    // --exit-code, if any, becomes a *predicted* value: a mismatch with the
+    // actual value is a hard error before any state mutation. without this
+    // pass, the falsifiability bar for prop/integration/replay was an honor
+    // system since the contradiction only surfaced on `clms rerun` (which a
+    // cheating agent never invokes).
+    if matches!(
+        m,
+        EvidenceMethod::PropTest | EvidenceMethod::IntegrationTest | EvidenceMethod::ReplayTest
+    ) {
+        let cmd = ev
+            .cmd
+            .as_deref()
+            .expect("validate_evidence guarantees --cmd presence for these methods");
+        let claimed_exit = ev.exit_code;
+        eprintln!("executing: {}", cmd);
+        let (actual_exit, stdout) = run_cmd(cmd)?;
+        if let Some(claimed) = claimed_exit {
+            if claimed != actual_exit {
+                let preview = String::from_utf8_lossy(&stdout[..stdout.len().min(200)]);
+                return Err(anyhow!(
+                    "--exit-code mismatch on claim #{}: you claimed {}, --cmd actually exited {}.\n  cmd:    {}\n  stdout: {:?}{}\n\nclms now executes --cmd at verify time and captures the actual exit_code. either fix --cmd, drop the (now-optional) --exit-code flag, or write a different claim if the contradiction is real.",
+                    seq,
+                    claimed,
+                    actual_exit,
+                    cmd,
+                    preview,
+                    if stdout.len() > 200 { " ..." } else { "" },
+                ));
+            }
+        }
+        ev.exit_code = Some(actual_exit);
+        ev.stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
+    }
     if let Some((prior_hash, prior_at)) = detect_drift(&claim, &ev.r#ref, &ev.ref_hash) {
         if !a.acknowledge_drift {
             return Err(anyhow!(
@@ -830,7 +866,7 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
         }
         _ => {}
     }
-    println!("rerunning: {}", cmd);
+    eprintln!("rerunning: {}", cmd);
     let (exit_code, stdout) = run_cmd(&cmd)?;
     let new_ref_hash = hash_ref_if_local(&r#ref);
     let stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
