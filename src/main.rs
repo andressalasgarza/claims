@@ -15,7 +15,7 @@ use models::{Claim, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, State,
 use output::OutputFormat;
 use std::path::PathBuf;
 use store::{
-    cascade_suspect, detect_dataset_drift, detect_drift, evidence_user_hash,
+    cascade_suspect, detect_dataset_drift, detect_drift, detect_rename, evidence_user_hash,
     hash_ref_if_local, latest_runnable_evidence, run_cmd, validate_evidence, Store,
 };
 use ulid::Ulid;
@@ -802,6 +802,15 @@ refute this one instead.",
                 &prior_hash[..16.min(prior_hash.len())],
                 prior_at,
                 ev.ref_hash.as_deref().map(|h| &h[..16.min(h.len())]).unwrap_or("-"),
+            ));
+        }
+    }
+    if let Some((prior_ref, prior_at)) = detect_rename(&claim, &ev.r#ref, &ev.ref_hash) {
+        if !a.acknowledge_drift {
+            return Err(anyhow!(
+                "ref rename detected: --ref '{}' has the same content_hash as prior evidence on claim #{} which used '{}' (recorded {}).\n\n\
+the bytes are identical — this is a rename/copy/symlink of the same file under a new path, not new evidence. without this check the dedup (which keys on the ref *string*) would accept this as independent evidence and inflate the count for free. use the original ref, re-run with --acknowledge-drift if the renamed copy is intentional documentation, or write a new claim if it really refers to a distinct file.",
+                ev.r#ref, seq, prior_ref, prior_at
             ));
         }
     }

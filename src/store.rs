@@ -487,6 +487,36 @@ pub fn detect_drift(
     None
 }
 
+/// returns Some((prior_ref, prior_recorded_at_rfc3339)) if `claim` has prior
+/// evidence whose ref_hash equals the new ref_hash but whose ref *string*
+/// differs. this is the rename-pattern dodge: agent copies test.py to
+/// test_v2.py (or moves it, or symlinks), then verifies the new path as if it
+/// were a distinct piece of evidence. without this check, dedup (which keys on
+/// ref string) accepts the duplicate-content-under-different-name as
+/// independent evidence, inflating the evidence count for free.
+///
+/// pairs with detect_drift (same ref + different hash) and detect_dataset_drift
+/// (same dataset path + different hash). together they close the rename and
+/// content-swap branches of evidence-laundering.
+pub fn detect_rename(
+    claim: &Claim,
+    new_ref: &str,
+    new_hash: &Option<String>,
+) -> Option<(String, String)> {
+    let new_hash = new_hash.as_deref()?;
+    for prior in &claim.evidence {
+        if prior.r#ref == new_ref {
+            continue; // same ref → handled by detect_drift
+        }
+        if let Some(prior_hash) = &prior.ref_hash {
+            if prior_hash == new_hash {
+                return Some((prior.r#ref.clone(), prior.recorded_at.to_rfc3339()));
+            }
+        }
+    }
+    None
+}
+
 /// returns Some((prior_hash, prior_recorded_at_rfc3339)) if `claim` already has
 /// replay-test evidence with the same `dataset` path but a different content
 /// hash. without this check, an agent can swap the bytes of a parquet file
