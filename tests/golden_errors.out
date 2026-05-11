@@ -38,6 +38,22 @@ Error: --data-source is only valid with --method stat-test (got --method prop-te
 exit=1
 Error: data-source 'simulated' refused. simulated/synthetic data cannot falsify a claim about reality. either capture real data and use --data-source=real, or file the claim with --method=derived and cite the simulator's underlying claims.
 
+=== stat-test: unknown test_type 'AUC' ===
++ target/release/clms verify 1 --method=stat-test --ref=x --test-type=AUC --p-value=0.01 --sample-size=100 --data-source=real
+exit=2
+error: invalid value 'AUC' for '--test-type <TEST_TYPE>'
+  [possible values: chi-squared, chi-squared-goodness-of-fit, t-test-paired, t-test-unpaired, t-test-one-sample, welch-t, anova, kolmogorov-smirnov, mann-whitney-u, wilcoxon-signed-rank, shapiro-wilk, anderson-darling, fisher, permutation, likelihood-ratio]
+
+For more information, try '--help'.
+
+=== stat-test: unknown test_type 'my-cool-test' ===
++ target/release/clms verify 1 --method=stat-test --ref=x --test-type=my-cool-test --p-value=0.01 --sample-size=100 --data-source=real
+exit=2
+error: invalid value 'my-cool-test' for '--test-type <TEST_TYPE>'
+  [possible values: chi-squared, chi-squared-goodness-of-fit, t-test-paired, t-test-unpaired, t-test-one-sample, welch-t, anova, kolmogorov-smirnov, mann-whitney-u, wilcoxon-signed-rank, shapiro-wilk, anderson-darling, fisher, permutation, likelihood-ratio]
+
+For more information, try '--help'.
+
 === prop-test missing --cmd ===
 + target/release/clms verify 1 --method=prop-test --exit-code=0 --ref=x
 exit=1

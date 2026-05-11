@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -129,6 +130,96 @@ impl DataSource {
                 s
             )),
         }
+    }
+}
+
+/// closed set of hypothesis tests accepted on `stat-test --test-type`.
+/// previously `Option<String>` with zero validation — agents could write
+/// 'AUC' or 'MyCoolTest' and clms would store it. that broke the falsifiability
+/// audit trail because the same string could mean different things across
+/// claims, and unknown test names made reproducing the test impossible.
+///
+/// to add a test: append one variant. serde + clap derive use kebab-case so
+/// `ChiSquaredGoodnessOfFit` becomes `chi-squared-goodness-of-fit` on the cli.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum,
+)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum HypothesisTest {
+    /// pearson chi-squared test of independence / homogeneity.
+    ChiSquared,
+    /// chi-squared goodness-of-fit test against a specified distribution.
+    ChiSquaredGoodnessOfFit,
+    /// paired two-sample t-test (matched pairs).
+    TTestPaired,
+    /// unpaired (independent samples) t-test, equal variance.
+    TTestUnpaired,
+    /// one-sample t-test against a hypothesized mean.
+    TTestOneSample,
+    /// welch's t-test (unpaired, unequal variances).
+    WelchT,
+    /// one-way analysis of variance.
+    Anova,
+    /// kolmogorov-smirnov two-sample (or one-sample-vs-distribution).
+    KolmogorovSmirnov,
+    /// mann-whitney U / wilcoxon rank-sum (non-parametric).
+    MannWhitneyU,
+    /// wilcoxon signed-rank (paired, non-parametric).
+    WilcoxonSignedRank,
+    /// shapiro-wilk normality test.
+    ShapiroWilk,
+    /// anderson-darling goodness-of-fit.
+    AndersonDarling,
+    /// fisher's exact test (2x2 contingency).
+    Fisher,
+    /// permutation / randomization test.
+    Permutation,
+    /// likelihood-ratio test (nested models).
+    LikelihoodRatio,
+}
+
+impl HypothesisTest {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HypothesisTest::ChiSquared => "chi-squared",
+            HypothesisTest::ChiSquaredGoodnessOfFit => "chi-squared-goodness-of-fit",
+            HypothesisTest::TTestPaired => "t-test-paired",
+            HypothesisTest::TTestUnpaired => "t-test-unpaired",
+            HypothesisTest::TTestOneSample => "t-test-one-sample",
+            HypothesisTest::WelchT => "welch-t",
+            HypothesisTest::Anova => "anova",
+            HypothesisTest::KolmogorovSmirnov => "kolmogorov-smirnov",
+            HypothesisTest::MannWhitneyU => "mann-whitney-u",
+            HypothesisTest::WilcoxonSignedRank => "wilcoxon-signed-rank",
+            HypothesisTest::ShapiroWilk => "shapiro-wilk",
+            HypothesisTest::AndersonDarling => "anderson-darling",
+            HypothesisTest::Fisher => "fisher",
+            HypothesisTest::Permutation => "permutation",
+            HypothesisTest::LikelihoodRatio => "likelihood-ratio",
+        }
+    }
+
+    /// every known canonical name. used by the `clms schema` dump and the
+    /// error path when an unknown string sneaks in via a legacy claim file.
+    pub fn all_names() -> &'static [&'static str] {
+        &[
+            "chi-squared",
+            "chi-squared-goodness-of-fit",
+            "t-test-paired",
+            "t-test-unpaired",
+            "t-test-one-sample",
+            "welch-t",
+            "anova",
+            "kolmogorov-smirnov",
+            "mann-whitney-u",
+            "wilcoxon-signed-rank",
+            "shapiro-wilk",
+            "anderson-darling",
+            "fisher",
+            "permutation",
+            "likelihood-ratio",
+        ]
     }
 }
 
@@ -290,7 +381,7 @@ pub struct Evidence {
     pub note: Option<String>,
     pub p_value: Option<f64>,
     pub sample_size: Option<u64>,
-    pub test_type: Option<String>,
+    pub test_type: Option<HypothesisTest>,
     pub exit_code: Option<i32>,
     pub quote: Option<String>,
     pub from_claims: Vec<u64>,

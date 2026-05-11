@@ -79,6 +79,13 @@ run_case "cross-flag: --data-source on prop-test" \
 run_case "simulated rejected on stat-test" \
   "$CLMS" verify "$CLAIM_ID" --method=stat-test --cmd="echo" --exit-code=0 --ref="x" --data-source=simulated
 
+# --- unknown test_type on stat-test refused by clap's value-enum parser ---
+run_case "stat-test: unknown test_type 'AUC'" \
+  "$CLMS" verify "$CLAIM_ID" --method=stat-test --ref="x" --test-type=AUC --p-value=0.01 --sample-size=100 --data-source=real
+
+run_case "stat-test: unknown test_type 'my-cool-test'" \
+  "$CLMS" verify "$CLAIM_ID" --method=stat-test --ref="x" --test-type=my-cool-test --p-value=0.01 --sample-size=100 --data-source=real
+
 # --- missing required field per method ---
 run_case "prop-test missing --cmd" \
   "$CLMS" verify "$CLAIM_ID" --method=prop-test --exit-code=0 --ref="x"

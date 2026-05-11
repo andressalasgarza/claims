@@ -4,7 +4,12 @@ EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
   integration-test  --ref --cmd --target <url-or-host> [--exit-code predictive]
   replay-test       --ref --cmd --dataset <path>      [--exit-code predictive]
   stat-test         --ref --p-value --sample-size --test-type --data-source <real|live>
-                                                       [--cmd recommended]
+                    [--cmd recommended]
+                    --test-type: closed enum, one of:
+                      chi-squared | chi-squared-goodness-of-fit
+                      t-test-paired | t-test-unpaired | t-test-one-sample | welch-t
+                      anova | kolmogorov-smirnov | mann-whitney-u | wilcoxon-signed-rank
+                      shapiro-wilk | anderson-darling | fisher | permutation | likelihood-ratio
   observed          --ref                              (file | URL | sha256:HEX)
   documented        --ref --quote "<exact text from doc>"
   derived           --from <id> --from <id>            (min 2, each must exist + be verified)
@@ -63,7 +68,7 @@ EXAMPLES
 
   # statistical test on real samples
   clms verify 4 --method stat-test --ref ./test.py \
-    --test-type ks --p-value 0.003 --sample-size 4821 --data-source real \
+    --test-type kolmogorov-smirnov --p-value 0.003 --sample-size 4821 --data-source real \
     --cmd "python3 ./test.py"
 
   # documented source

@@ -12,8 +12,8 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use colored::*;
 use models::{
-    Claim, ConfidenceTier, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, State,
-    SCHEMA_VERSION,
+    Claim, ConfidenceTier, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, HypothesisTest,
+    State, SCHEMA_VERSION,
 };
 use output::OutputFormat;
 use std::path::PathBuf;
@@ -215,8 +215,13 @@ struct VerifyArgs {
     p_value: Option<f64>,
     #[arg(long)]
     sample_size: Option<u64>,
-    #[arg(long)]
-    test_type: Option<String>,
+    /// stat-test only: closed enum (chi-squared | t-test-paired | t-test-unpaired |
+    /// t-test-one-sample | welch-t | anova | kolmogorov-smirnov | mann-whitney-u |
+    /// wilcoxon-signed-rank | shapiro-wilk | anderson-darling | fisher | permutation |
+    /// likelihood-ratio | chi-squared-goodness-of-fit). agent-typed strings like 'AUC'
+    /// or 'MyTest' are refused at parse time.
+    #[arg(long, value_enum)]
+    test_type: Option<HypothesisTest>,
     #[arg(long)]
     exit_code: Option<i32>,
     #[arg(long)]
@@ -727,7 +732,7 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
         note: a.note.clone(),
         p_value: a.p_value,
         sample_size: a.sample_size,
-        test_type: a.test_type.clone(),
+        test_type: a.test_type,
         exit_code: a.exit_code,
         quote: a.quote.clone(),
         from_claims: a.from.clone(),

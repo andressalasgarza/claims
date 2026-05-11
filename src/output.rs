@@ -93,7 +93,7 @@ fn evidence_extras(e: &Evidence) -> String {
     match e.method {
         EvidenceMethod::StatTest => format!(
             " [{}, p={}, n={}, src={}]",
-            e.test_type.as_deref().unwrap_or("?"),
+            e.test_type.map(|t| t.as_str()).unwrap_or("?"),
             e.p_value.map(|v| v.to_string()).unwrap_or("?".into()),
             e.sample_size.map(|v| v.to_string()).unwrap_or("?".into()),
             e.data_source.map(|d| d.as_str()).unwrap_or("?")

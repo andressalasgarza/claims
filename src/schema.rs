@@ -4,7 +4,7 @@
 //! changes here MUST be additive (new keys ok, removing or renaming keys
 //! is a breaking change). bump `version` whenever the shape changes.
 
-use crate::models::{METHODS, REFUSED_METHODS};
+use crate::models::{HypothesisTest, METHODS, REFUSED_METHODS};
 use serde_json::{json, Value};
 
 /// machine-readable dump of the method-descriptor table. agent introspection
@@ -158,7 +158,8 @@ pub fn schema_value() -> Value {
                 "confidence": "empirical",
                 "falsification_surface": "real or live data samples. simulated/synthetic data is rejected at parse time.",
                 "data_source_values": ["real", "live"],
-                "notes": "file at --ref is content-hashed for drift detection"
+                "test_type_values": HypothesisTest::all_names(),
+                "notes": "file at --ref is content-hashed for drift detection. test_type is a closed enum — unknown strings refused at parse time."
             },
             "observed": {
                 "required": ["ref"],
