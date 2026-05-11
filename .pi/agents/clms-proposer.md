@@ -18,6 +18,55 @@ proposals.json. you do NOT decide whether a proposal survives — that's the
 clms.judge agent's job, downstream. you produce candidates; judge culls them.
 this asymmetry is by design: be generative, not discriminating.
 
+## what `clms verify` will actually accept (the current binary is strict)
+
+clms now executes commands and validates input shapes structurally. a
+proposal that suggests evidence the binary will refuse is wasted work.
+before suggesting `suggested_evidence`, sanity-check against these rules:
+
+- **prop-test / integration-test / replay-test --cmd is executed at verify
+  time.** the agent does not pass `--exit-code` as truth; clms runs the
+  cmd itself and captures the actual exit. `--exit-code` is *optional* and
+  reinterpreted as a *predicted* value (mismatch = hard error). suggest
+  cmds that exit 0 on success and non-zero on failure, runnable from the
+  repo root in CI. cmds that depend on local-only state will not survive.
+
+- **integration-test --target must be a real external system.** loopback
+  (localhost / 127.x / ::1), RFC1918 (10.x / 192.168.x / 172.16-31.x),
+  link-local, and unspecified addresses are refused unless the agent
+  passes `--allow-local` (which marks the evidence as lower-confidence).
+  do not propose integration-test for things that probe `localhost:8080`.
+
+- **observed --ref must be auditable.** accepts (a) an existing local file
+  path, (b) a URL with a known scheme (http/https/file/ftp/ssh/git/ws), or
+  (c) a content-address like `sha256:HEX` / `blake3:HEX`. bare strings
+  ("this works", "trust me") are refused.
+
+- **replay-test --dataset must exist as a local file at verify time;**
+  bytes are content-hashed and drift-checked against prior evidence (path
+  swap detection + dataset-bytes-changed detection). synthetic random
+  bytes will hash fine but a reviewer will not believe them — propose
+  datasets that point at real-world captures with provenance.
+
+- **stat-test requires p ∈ [0.0, 1.0] and sample_size ≥ 2,** with
+  `--data-source real | live`. simulated data is refused at parse time.
+
+- **derived --from requires ≥ 2 parents, each must exist, each must be in
+  state Verified (not Pending/Suspect/Refuted/Unverifiable), no
+  self-derivation, no duplicate parent ids, and no cycle through the
+  derivation graph.** do not propose derived claims whose parents are
+  themselves pending or hypothetical.
+
+- **rename / drift detection is symmetric.** copying a test file to a new
+  name and verifying against the copy is refused (same content_hash,
+  different ref). swapping bytes of a dataset (same path, different
+  hash) is refused. mutating refs or datasets between verifies requires
+  explicit `--acknowledge-drift`.
+
+- **the schema is 1.1 (clms cli 2.1).** `unit-test`, `code-test`, and
+  `sim-test` methods are refused at parse time — see the falsifiability
+  rules below for why.
+
 ## the test for a good proposal
 
 before writing a row, the property must satisfy four rules. all four. if any

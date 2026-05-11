@@ -149,3 +149,35 @@ the cut rationale.
   promotion. either drop, or note in your rationale that the surviving
   evidence method must be one of the falsifiable seven (prop-test,
   integration-test, replay-test, stat-test, observed, documented, derived).
+
+## structural-strictness anti-patterns (binary now refuses these at verify)
+
+the current clms binary executes cmds and validates input shapes
+structurally. survivors whose `suggested_evidence` would be refused at
+verify time are wasted promotions — drop them, or note the structural
+constraint in your `rationale` so the human knows the bar.
+
+- **integration-test against `localhost` / 127.x / RFC1918** → refused
+  unless `--allow-local` is passed (and that flag drops the confidence).
+  drop candidates whose only plausible probe is a local dev server
+  unless the rationale explicitly accepts the lower-confidence tier.
+- **observed with a bare-string ref** (e.g. `--ref "this works"` or
+  `--ref "see notes"`) → refused. observed --ref must be (a) an existing
+  local file, (b) a URL with a known scheme, or (c) a content-address
+  like `sha256:HEX` / `blake3:HEX`. drop candidates whose evidence path
+  has no auditable surface.
+- **derived with hypothetical or pending parents** → derived requires ≥ 2
+  parents, each must be in state Verified, no self-cite, no cycles. if a
+  candidate's only path to verification is `derived` over claims that
+  don't exist yet, drop — or note that the parents must verify first.
+- **prop-test/integration-test/replay-test --cmd that depends on local
+  state** → clms now *executes* the cmd at verify time. cmds that read
+  from a developer's laptop, a personal API key, or a non-checked-in
+  fixture will fail in CI. drop candidates whose only suggested cmd is
+  non-reproducible.
+- **replay-test against synthetic data** → the binary will hash whatever
+  bytes you point at, but the convention is that --dataset must be a
+  real-world capture. drop candidates whose proposed dataset is
+  `/dev/urandom` output or known-synthetic fixtures.
+- **stat-test with claimed p-value outside [0, 1] or sample_size < 2** →
+  refused at parse. drop candidates that would require fabricated stats.
