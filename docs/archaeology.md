@@ -500,12 +500,14 @@ clms archaeology commit --from-plan survivors.json --keep 8
 
 # 4. claims land as pending. verify when ready. pick the method that matches
 #    the falsification surface (prop-test | integration-test | replay-test |
-#    stat-test). code-test was removed in schema 1.1.
+#    stat-test | benchmark | estimate). code-test was removed in schema 1.1.
 clms verify <id> --method prop-test --cmd "<suggested_evidence cmd>" \
     --ref <test-file>
 # --cmd is executed at verify; actual exit_code captured. omit --exit-code
 # or pass it as a *predicted* value (mismatch with actual → hard error).
-# or integration-test --target <url> / replay-test --dataset <path> / stat-test --data-source real
+# or integration-test --target <url> / replay-test --dataset <path> /
+# stat-test --data-source real / benchmark --metric --metric-value --threshold /
+# estimate --estimator --point-value --ci-lower --ci-upper --confidence-level
 ```
 
 ## test plan

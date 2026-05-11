@@ -517,7 +517,10 @@ fn cmd_schema(target: Option<String>, fmt: OutputFormat) -> Result<()> {
         }
     }
     println!();
-    println!("env vars: CLAIMS_FORMAT, CLAIMS_DIR, CLAIMS_AGENT, CLAIMS_SESSION");
+    if let Some(map) = s["env_vars"].as_object() {
+        let names: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+        println!("env vars: {}", names.join(", "));
+    }
     println!("under --format ai: errors emit json envelope on stderr (run `clms --format ai schema` for full spec)");
     Ok(())
 }

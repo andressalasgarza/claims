@@ -55,11 +55,14 @@ EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
   documented        --ref --quote "<exact text from doc>"
   derived           --from <id> --from <id>            (min 2, each must exist + be verified)
 
-CMD EXECUTION (prop-test, integration-test, replay-test)
+CMD EXECUTION (prop-test, integration-test, replay-test, benchmark, estimate)
   --cmd is EXECUTED at verify time. clms captures the actual exit_code and
-  hashes stdout. --exit-code is optional and reinterpreted as the agent's
-  *predicted* exit; a mismatch with the actual value is a hard error. omit it
-  to silently capture whatever the cmd returns.
+  hashes stdout. for prop-test / integration-test / replay-test, --exit-code
+  is optional and reinterpreted as the agent's *predicted* exit; a mismatch
+  with the actual value is a hard error. for benchmark and estimate, the
+  cmd is required and must exit 0 (the structural gate is the metric-vs-
+  threshold or point-in-CI check, not the exit code).
+  stat-test executes --cmd if provided (recommended) for drift detection.
 
 REF / TARGET SHAPE
   observed --ref must be one of: (a) an existing local file path, (b) a URL
@@ -145,9 +148,11 @@ MIN_TIER GATE
   to weakest): empirical > observed > documented > derived. example: a claim
   stamped `min_tier=empirical` cannot be Verified by `--method observed`,
   `--method documented`, or `--method derived` — only by prop-test,
-  integration-test, replay-test, or stat-test. the error lists the eligible
-  methods at the declared floor. claims without min_tier behave exactly as
-  before (no gate, all methods accepted).
+  integration-test, replay-test, stat-test, benchmark, or estimate. the
+  error lists the eligible methods at the declared floor, filtered from the
+  METHODS table at runtime so it stays correct as the empirical bucket
+  grows. claims without min_tier behave exactly as before (no gate, all
+  methods accepted).
 
 DRIFT (three checks, all gated by --acknowledge-drift)
   - ref drift:      same --ref string, different content hash. the file

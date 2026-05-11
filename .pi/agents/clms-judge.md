@@ -58,7 +58,8 @@ elsewhere (type system, CI assertion, lint rule, existing test), drop it.
 
 Note: "better-tracked by an existing unit test" is *not* a reason to keep —
 clms's empirical tier is reserved for falsifiable evidence (prop/integration
-/replay/stat). a unit test passing in CI does not falsify anything; it just
+/replay/stat/benchmark/estimate). a unit test passing in CI does not falsify
+anything; it just
 confirms the author wrote consistent code. surviving candidates must have a
 path to a real falsification surface or they don't belong in the ledger.
 
@@ -141,8 +142,10 @@ the cut rationale.
   `assert_eq!(f(specific_input), specific_output)`, the claim is
   confirmatory by construction — the test cannot disagree because the
   author picked both sides. drop unless the candidate can be re-stated as
-  a property over an input space (prop-test) or against a real external
-  system / real dataset (integration-test, replay-test, stat-test).
+  a property over an input space (prop-test), against a real external
+  system / real dataset (integration-test, replay-test, stat-test), as a
+  measured metric vs declared threshold (benchmark), or as a point
+  estimate with declared CI (estimate).
 - **simulator-validated** → a stat-test on synthetic data only proves the
   simulator behaves like itself. drop unless the candidate cites a real
   dataset or live measurement.
@@ -173,8 +176,9 @@ constraint in your `rationale` so the human knows the bar.
   parents, each must be in state Verified, no self-cite, no cycles. if a
   candidate's only path to verification is `derived` over claims that
   don't exist yet, drop — or note that the parents must verify first.
-- **prop-test/integration-test/replay-test --cmd that depends on local
-  state** → clms now *executes* the cmd at verify time. cmds that read
+- **--cmd that depends on local state** (any cmd-executing method:
+  prop-test, integration-test, replay-test, stat-test, benchmark,
+  estimate) → clms now *executes* the cmd at verify time. cmds that read
   from a developer's laptop, a personal API key, or a non-checked-in
   fixture will fail in CI. drop candidates whose only suggested cmd is
   non-reproducible.

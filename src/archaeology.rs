@@ -485,8 +485,9 @@ fn parse_evidence_directive(raw: &str) -> SuggestedEvidence {
     // simple key=value parsing, no quoting. format:
     //   method=<name> [cmd=<...>] [ref=<...>]
     // default to prop-test for un-promoted candidates: it has the lowest
-    // setup cost among empirical methods (no --target, no --dataset) and is
-    // still falsificatory. integration-test and replay-test require
+    // setup cost among empirical methods (no --target, no --dataset, no
+    // --metric, no --estimator) and is still falsificatory. integration-
+    // test / replay-test / stat-test / benchmark / estimate all require
     // explicit values that the proposer cannot pick on the agent's behalf.
     let mut method = "prop-test".to_string();
     let mut cmd: Option<String> = None;

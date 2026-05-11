@@ -202,10 +202,12 @@ pub fn schema_value() -> Value {
             }
         },
         "env_vars": {
-            "CLAIMS_FORMAT":  "default output format (default|human|ai)",
-            "CLAIMS_DIR":     "working directory containing .claims/",
-            "CLAIMS_AGENT":   "auto-stamp every write with this agent name",
-            "CLAIMS_SESSION": "auto-stamp every write with this session id"
+            "CLAIMS_FORMAT":   "default output format (default|human|ai)",
+            "CLAIMS_DIR":      "working directory containing .claims/",
+            "CLAIMS_AGENT":    "auto-stamp every write with this agent name",
+            "CLAIMS_SESSION":  "auto-stamp every write with this session id",
+            "CLAIMS_BACKFILL": "=1 authorizes --git-sha-override / --created-at-override on `clms add` (archaeology / forensic reconstruction only).",
+            "CLAIMS_REPAIR":   "=1 disables the content_hash gate in read_claim for forensic recovery. read-only: all mutating commands refuse under this flag."
         }
     })
 }

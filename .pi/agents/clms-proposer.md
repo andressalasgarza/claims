@@ -24,12 +24,16 @@ clms now executes commands and validates input shapes structurally. a
 proposal that suggests evidence the binary will refuse is wasted work.
 before suggesting `suggested_evidence`, sanity-check against these rules:
 
-- **prop-test / integration-test / replay-test --cmd is executed at verify
-  time.** the agent does not pass `--exit-code` as truth; clms runs the
-  cmd itself and captures the actual exit. `--exit-code` is *optional* and
-  reinterpreted as a *predicted* value (mismatch = hard error). suggest
-  cmds that exit 0 on success and non-zero on failure, runnable from the
-  repo root in CI. cmds that depend on local-only state will not survive.
+- **--cmd is executed at verify time for every empirical method that
+  takes one** (prop-test, integration-test, replay-test, stat-test,
+  benchmark, estimate). the agent does not pass `--exit-code` as truth;
+  clms runs the cmd itself and captures the actual exit + stdout_hash.
+  for prop / integration / replay, `--exit-code` is *optional* and
+  reinterpreted as a *predicted* value (mismatch = hard error). for
+  benchmark and estimate, the cmd is required and must exit 0; the gate
+  signal is structural (metric vs threshold, point inside CI) not exit
+  code. suggest cmds that are reproducible from the repo root in CI —
+  cmds depending on local-only state will not survive.
 
 - **integration-test --target must be a real external system.** loopback
   (localhost / 127.x / ::1), RFC1918 (10.x / 192.168.x / 172.16-31.x),
