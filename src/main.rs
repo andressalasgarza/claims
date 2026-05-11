@@ -719,7 +719,24 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
     })
 }
 
+/// CLAIMS_REPAIR=1 disables the content_hash gate in store::read_claim so a
+/// human can recover from a corrupted .claims/ tree (forensic forward-read).
+/// any *mutating* command run while repair is in effect would carry the
+/// tampered state forward; in the worst case (rerun) it would execute a
+/// tampered cmd field as shell. mutators bail at the top with this helper.
+fn refuse_in_repair_mode(op: &str) -> Result<()> {
+    if std::env::var("CLAIMS_REPAIR").is_ok() {
+        return Err(anyhow!(
+            "{}: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips content_hash validation for forensic recovery (show, diff-evidence, timeline, render-context, reindex). \
+fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered cmd field could be carried forward into a rerun and executed as shell.",
+            op
+        ));
+    }
+    Ok(())
+}
+
 fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()> {
+    refuse_in_repair_mode("verify")?;
     let seq = store.resolve(&a.id)?;
     let mut claim = store.read_claim(seq)?;
     if claim.state == State::Refuted {
@@ -822,6 +839,7 @@ this one instead.",
 }
 
 fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
+    refuse_in_repair_mode("rerun")?;
     let seq = store.resolve(&a.id)?;
     let mut claim = store.read_claim(seq)?;
     if claim.state == State::Refuted {
@@ -1059,6 +1077,7 @@ fn render_cascade_note(store: &mut Store, seq: u64, cascade: bool) -> Result<Str
 }
 
 fn cmd_refute(store: &mut Store, a: RefuteArgs, fmt: OutputFormat) -> Result<()> {
+    refuse_in_repair_mode("refute")?;
     let seq = store.resolve(&a.id)?;
     if a.by == seq {
         return Err(anyhow!(
