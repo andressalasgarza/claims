@@ -95,9 +95,10 @@ pub enum EvidenceMethod {
     /// direction). requires --ref --cmd --metric --metric-value --threshold
     /// --sample-size --data-source.
     Benchmark,
-    /// point estimate with confidence interval. distinct from benchmark (CI
-    /// shape, not threshold). requires --ref --cmd --estimator --point-value
-    /// --ci-lower --ci-upper --confidence-level --sample-size --data-source.
+    /// point estimate with confidence interval on real data. distinct from
+    /// benchmark (CI shape, not threshold). requires --ref --cmd --estimator
+    /// --point-value --ci-lower --ci-upper --confidence-level --sample-size
+    /// --data-source.
     Estimate,
     /// captured runtime artifact (tx hash, log line, response). requires --ref.
     Observed,
@@ -169,6 +170,62 @@ impl BenchmarkMetric {
             "auc-roc", "auc-pr", "f1", "precision", "recall", "accuracy",
             "balanced-accuracy", "mcc", "kappa-cohen", "r2",
             "log-loss", "brier", "rmse", "mae", "mape",
+        ]
+    }
+}
+
+/// estimators accepted on `estimate --estimator`. each names a statistical
+/// quantity whose value is reported with a confidence interval (CI). clms
+/// enforces the CI shape (ci_lower <= point_value <= ci_upper, confidence
+/// in (0,1)) but is agnostic about the estimator's semantics — those live
+/// in the script behind --cmd.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum,
+)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum Estimator {
+    Mean,
+    Median,
+    GeometricMean,
+    StdDev,
+    StdError,
+    Variance,
+    Skewness,
+    Kurtosis,
+    CohensD,
+    OddsRatio,
+    RiskRatio,
+    Correlation,
+    SpearmanRho,
+}
+
+impl Estimator {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Estimator::Mean => "mean",
+            Estimator::Median => "median",
+            Estimator::GeometricMean => "geometric-mean",
+            Estimator::StdDev => "std-dev",
+            Estimator::StdError => "std-error",
+            Estimator::Variance => "variance",
+            Estimator::Skewness => "skewness",
+            Estimator::Kurtosis => "kurtosis",
+            Estimator::CohensD => "cohens-d",
+            Estimator::OddsRatio => "odds-ratio",
+            Estimator::RiskRatio => "risk-ratio",
+            Estimator::Correlation => "correlation",
+            Estimator::SpearmanRho => "spearman-rho",
+        }
+    }
+
+    pub fn all_names() -> &'static [&'static str] {
+        &[
+            "mean", "median", "geometric-mean",
+            "std-dev", "std-error", "variance",
+            "skewness", "kurtosis",
+            "cohens-d", "odds-ratio", "risk-ratio",
+            "correlation", "spearman-rho",
         ]
     }
 }
@@ -381,6 +438,18 @@ pub const METHODS: &[MethodSpec] = &[
         exclusive_flag: Some("metric"),
     },
     MethodSpec {
+        name: "estimate",
+        variant: EvidenceMethod::Estimate,
+        tier: ConfidenceTier::Empirical,
+        runnable: true,
+        falsification_surface: "claimed point falls outside computed CI on replication",
+        required_fields: &[
+            "ref", "cmd", "estimator", "point_value", "ci_lower", "ci_upper",
+            "confidence_level", "sample_size", "data_source",
+        ],
+        exclusive_flag: Some("estimator"),
+    },
+    MethodSpec {
         name: "observed",
         variant: EvidenceMethod::Observed,
         tier: ConfidenceTier::Observed,
@@ -512,6 +581,23 @@ pub struct Evidence {
     /// threshold passes. mismatch = hard refusal, no state transition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
+    /// estimate: required. statistical quantity being reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimator: Option<Estimator>,
+    /// estimate: required. agent-declared point estimate of `estimator`.
+    /// must lie within [ci_lower, ci_upper] or verification is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point_value: Option<f64>,
+    /// estimate: required. lower bound of the confidence interval. must be
+    /// finite and <= point_value <= ci_upper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_lower: Option<f64>,
+    /// estimate: required. upper bound of the confidence interval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_upper: Option<f64>,
+    /// estimate: required. confidence level, in (0, 1). typical: 0.90 / 0.95 / 0.99.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_level: Option<f64>,
     pub recorded_at: DateTime<Utc>,
 }
 

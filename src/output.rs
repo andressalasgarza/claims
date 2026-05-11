@@ -117,6 +117,16 @@ fn evidence_extras(e: &Evidence) -> String {
             e.sample_size.map(|v| v.to_string()).unwrap_or("?".into()),
             e.data_source.map(|d| d.as_str()).unwrap_or("?")
         ),
+        EvidenceMethod::Estimate => format!(
+            " [{}, point={}, CI=[{}, {}], conf={}, n={}, src={}]",
+            e.estimator.map(|m| m.as_str()).unwrap_or("?"),
+            e.point_value.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.ci_lower.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.ci_upper.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.confidence_level.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.data_source.map(|d| d.as_str()).unwrap_or("?")
+        ),
         EvidenceMethod::Documented => {
             let q = e.quote.as_deref().unwrap_or("");
             let q = if q.len() > 60 { &q[..60] } else { q };

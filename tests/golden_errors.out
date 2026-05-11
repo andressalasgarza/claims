@@ -16,7 +16,7 @@ Error: method 'sim-test' is not a valid evidence method. running a stat-test on 
 === unknown: bogus-method ===
 + target/release/clms verify 1 --method=bogus-method --cmd=echo --exit-code=0 --ref=x
 exit=1
-Error: invalid method 'bogus-method'. valid: prop-test|integration-test|replay-test|stat-test|benchmark|observed|documented|derived
+Error: invalid method 'bogus-method'. valid: prop-test|integration-test|replay-test|stat-test|benchmark|estimate|observed|documented|derived
 
 === cross-flag: --target on prop-test ===
 + target/release/clms verify 1 --method=prop-test --cmd=echo --exit-code=0 --ref=x --target=https://api.example.com
@@ -31,7 +31,7 @@ Error: --dataset is only valid with --method replay-test (got --method prop-test
 === cross-flag: --data-source on prop-test ===
 + target/release/clms verify 1 --method=prop-test --cmd=echo --exit-code=0 --ref=x --data-source=real
 exit=1
-Error: --data-source is only valid with --method stat-test or --method benchmark (got --method prop-test)
+Error: --data-source is only valid with --method stat-test, --method benchmark, or --method estimate (got --method prop-test)
 
 === simulated rejected on stat-test ===
 + target/release/clms verify 1 --method=stat-test --cmd=echo --exit-code=0 --ref=x --data-source=simulated
@@ -89,6 +89,44 @@ Error: benchmark requires --threshold <float>
 exit=1
 Error: --metric is only valid with --method benchmark (got --method prop-test)
 
+=== estimate: unknown estimator 'GaussianMode' ===
++ target/release/clms verify 1 --method=estimate --ref=x --estimator=GaussianMode --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd=echo
+exit=2
+error: invalid value 'GaussianMode' for '--estimator <ESTIMATOR>'
+  [possible values: mean, median, geometric-mean, std-dev, std-error, variance, skewness, kurtosis, cohens-d, odds-ratio, risk-ratio, correlation, spearman-rho]
+
+For more information, try '--help'.
+
+=== estimate: point outside CI ===
++ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=2.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd=echo
+exit=1
+Error: estimate --point-value=2 is outside the declared CI [0.9, 1.1]. the point estimate must lie within its own interval; otherwise the CI is misreported.
+
+=== estimate: ci_lower > ci_upper ===
++ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=1.0 --ci-lower=1.5 --ci-upper=0.5 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd=echo
+exit=1
+Error: estimate --ci-lower=1.5 > --ci-upper=0.5. lower bound must be ≤ upper bound.
+
+=== estimate: confidence_level=1.5 (out of range) ===
++ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=1.5 --sample-size=100 --data-source=real --cmd=echo
+exit=1
+Error: estimate --confidence-level must be in (0, 1) (got 1.5). typical values: 0.90, 0.95, 0.99.
+
+=== estimate: confidence_level=0 (boundary) ===
++ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0 --sample-size=100 --data-source=real --cmd=echo
+exit=1
+Error: estimate --confidence-level must be in (0, 1) (got 0). typical values: 0.90, 0.95, 0.99.
+
+=== estimate: point_value Inf ===
++ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=Infinity --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd=echo
+exit=1
+Error: estimate --point-value must be finite (got inf). NaN/inf are not measurable values.
+
+=== estimate: --estimator on observed ===
++ target/release/clms verify 1 --method=observed --ref=x --estimator=mean
+exit=1
+Error: --estimator is only valid with --method estimate (got --method observed)
+
 === prop-test missing --cmd ===
 + target/release/clms verify 1 --method=prop-test --exit-code=0 --ref=x
 exit=1
@@ -137,21 +175,21 @@ Error: invalid tier 'epirical'. valid: empirical | observed | documented | deriv
 === min_tier: refuse observed against empirical floor ===
 + target/release/clms verify 2 --method=observed --ref=TMPDIR/artifact.txt
 exit=1
-Error: claim #2 requires min_tier=empirical (got method 'observed' at tier observed). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark.
+Error: claim #2 requires min_tier=empirical (got method 'observed' at tier observed). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark | estimate.
 
 this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
 
 === min_tier: refuse documented against empirical floor ===
 + target/release/clms verify 2 --method=documented --ref=https://docs.example.com --quote=the api returns 200
 exit=1
-Error: claim #2 requires min_tier=empirical (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark.
+Error: claim #2 requires min_tier=empirical (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark | estimate.
 
 this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
 
 === min_tier: refuse documented against observed floor ===
 + target/release/clms verify 3 --method=documented --ref=https://docs.example.com --quote=text
 exit=1
-Error: claim #3 requires min_tier=observed (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark | observed.
+Error: claim #3 requires min_tier=observed (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark | estimate | observed.
 
 this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
 

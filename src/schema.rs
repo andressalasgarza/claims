@@ -4,7 +4,7 @@
 //! changes here MUST be additive (new keys ok, removing or renaming keys
 //! is a breaking change). bump `version` whenever the shape changes.
 
-use crate::models::{BenchmarkMetric, HypothesisTest, METHODS, REFUSED_METHODS};
+use crate::models::{BenchmarkMetric, Estimator, HypothesisTest, METHODS, REFUSED_METHODS};
 use serde_json::{json, Value};
 
 /// machine-readable dump of the method-descriptor table. agent introspection
@@ -169,6 +169,15 @@ pub fn schema_value() -> Value {
                 "data_source_values": ["real", "live"],
                 "metric_values": BenchmarkMetric::all_names(),
                 "notes": "each metric has fixed direction. higher-better: auc-roc, auc-pr, f1, precision, recall, accuracy, balanced-accuracy, mcc, kappa-cohen, r2. lower-better: log-loss, brier, rmse, mae, mape. file at --ref is content-hashed; --cmd is executed at verify time."
+            },
+            "estimate": {
+                "required": ["ref", "cmd", "estimator", "point_value", "ci_lower", "ci_upper", "confidence_level", "sample_size", "data_source"],
+                "recommended": [],
+                "confidence": "empirical",
+                "falsification_surface": "claimed point estimate falls outside its declared CI on replication. clms enforces shape: ci_lower <= point_value <= ci_upper, 0 < confidence_level < 1.",
+                "data_source_values": ["real", "live"],
+                "estimator_values": Estimator::all_names(),
+                "notes": "point + CI describe a statistical quantity (mean, skew, cohens-d, etc.) with sampling uncertainty. file at --ref is content-hashed; --cmd is executed at verify time and must exit 0."
             },
             "observed": {
                 "required": ["ref"],

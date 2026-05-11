@@ -12,8 +12,8 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use colored::*;
 use models::{
-    BenchmarkMetric, Claim, ConfidenceTier, DataSource, Edge, EdgeType, Evidence, EvidenceMethod,
-    HypothesisTest, State, SCHEMA_VERSION,
+    BenchmarkMetric, Claim, ConfidenceTier, DataSource, Edge, EdgeType, Estimator, Evidence,
+    EvidenceMethod, HypothesisTest, State, SCHEMA_VERSION,
 };
 use output::OutputFormat;
 use std::path::PathBuf;
@@ -265,6 +265,23 @@ struct VerifyArgs {
     /// lower-better (rmse, mae, log-loss) metric_value <= threshold passes.
     #[arg(long)]
     threshold: Option<f64>,
+    /// estimate only: statistical quantity being reported (mean, median,
+    /// skewness, cohens-d, etc.).
+    #[arg(long, value_enum)]
+    estimator: Option<Estimator>,
+    /// estimate only: agent-declared point estimate. must lie within
+    /// [--ci-lower, --ci-upper] or verification is refused.
+    #[arg(long)]
+    point_value: Option<f64>,
+    /// estimate only: lower bound of the confidence interval.
+    #[arg(long)]
+    ci_lower: Option<f64>,
+    /// estimate only: upper bound of the confidence interval.
+    #[arg(long)]
+    ci_upper: Option<f64>,
+    /// estimate only: confidence level, in (0, 1). typical: 0.90 / 0.95 / 0.99.
+    #[arg(long)]
+    confidence_level: Option<f64>,
 }
 
 #[derive(Args)]
@@ -705,10 +722,11 @@ fn check_exclusive_flags(method: EvidenceMethod, a: &VerifyArgs) -> Result<()> {
     // single-owner flags: exactly one method owns each. driven by
     // MethodSpec::exclusive_flag so adding a new flag-bearing method needs
     // no changes here.
-    let single_owner_flags: [(&str, bool); 3] = [
+    let single_owner_flags: [(&str, bool); 4] = [
         ("target", a.target.is_some()),
         ("dataset", a.dataset.is_some()),
         ("metric", a.metric.is_some()),
+        ("estimator", a.estimator.is_some()),
     ];
     for (flag_name, is_present) in single_owner_flags {
         if !is_present {
@@ -733,10 +751,13 @@ fn check_exclusive_flags(method: EvidenceMethod, a: &VerifyArgs) -> Result<()> {
     // the single-owner mechanism above since two methods legitimately
     // accept it.
     if a.data_source.is_some()
-        && !matches!(method, EvidenceMethod::StatTest | EvidenceMethod::Benchmark)
+        && !matches!(
+            method,
+            EvidenceMethod::StatTest | EvidenceMethod::Benchmark | EvidenceMethod::Estimate
+        )
     {
         return Err(anyhow!(
-            "--data-source is only valid with --method stat-test or --method benchmark (got --method {})",
+            "--data-source is only valid with --method stat-test, --method benchmark, or --method estimate (got --method {})",
             method.as_str()
         ));
     }
@@ -745,14 +766,15 @@ fn check_exclusive_flags(method: EvidenceMethod, a: &VerifyArgs) -> Result<()> {
 
 fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
     check_exclusive_flags(m, a)?;
-    // data-source is parsed for stat-test and benchmark (the two methods that
-    // legitimately accept it). check_exclusive_flags has already refused it
-    // on every other method, so a non-None data-source here is guaranteed to
-    // belong to one of those two.
+    // data-source is parsed for stat-test, benchmark, and estimate (the
+    // three methods that legitimately accept it). check_exclusive_flags has
+    // already refused it on every other method, so a non-None data-source
+    // here is guaranteed to belong to one of those three.
     let data_source = match (&m, &a.data_source) {
-        (EvidenceMethod::StatTest | EvidenceMethod::Benchmark, Some(s)) => {
-            Some(DataSource::parse(s)?)
-        }
+        (
+            EvidenceMethod::StatTest | EvidenceMethod::Benchmark | EvidenceMethod::Estimate,
+            Some(s),
+        ) => Some(DataSource::parse(s)?),
         _ => None,
     };
     let dataset_hash = a.dataset.as_deref().and_then(hash_ref_if_local);
@@ -781,6 +803,11 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
         metric: a.metric,
         metric_value: a.metric_value,
         threshold: a.threshold,
+        estimator: a.estimator,
+        point_value: a.point_value,
+        ci_lower: a.ci_lower,
+        ci_upper: a.ci_upper,
+        confidence_level: a.confidence_level,
         recorded_at: Utc::now(),
     })
 }
@@ -865,25 +892,27 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
         ev.exit_code = Some(actual_exit);
         ev.stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
     }
-    // benchmark: execute --cmd to capture stdout_hash for drift detection on
-    // rerun. unlike prop/integration/replay, the gate signal is NOT exit_code
-    // — it's metric_value vs threshold, which validate_benchmark already
-    // enforced above. we still run --cmd so the eval is auditable on disk:
-    // an agent who lies about metric_value gets caught by the next reviewer
-    // re-running the captured cmd. capturing the actual exit_code too gives
-    // a cheap sanity check (a script that crashed but the agent reported a
-    // metric anyway is now visible).
-    if matches!(m, EvidenceMethod::Benchmark) {
+    // benchmark + estimate: execute --cmd to capture stdout_hash for drift
+    // detection on rerun. unlike prop/integration/replay, the gate signal is
+    // NOT exit_code — the validators (benchmark: metric_value vs threshold;
+    // estimate: point inside CI) have already enforced the structural pass
+    // above. we still run --cmd so the eval/estimator is auditable on disk:
+    // an agent who lies about metric_value or point_value gets caught by
+    // the next reviewer re-running the captured cmd. capturing the actual
+    // exit_code too gives a cheap sanity check (a script that crashed but
+    // the agent reported a number anyway is now visible).
+    if matches!(m, EvidenceMethod::Benchmark | EvidenceMethod::Estimate) {
         let cmd = ev
             .cmd
             .as_deref()
-            .expect("validate_benchmark guarantees --cmd presence");
+            .expect("validators guarantee --cmd presence for benchmark + estimate");
         eprintln!("executing: {}", cmd);
         let (actual_exit, stdout) = run_cmd(cmd)?;
         if actual_exit != 0 {
             let preview = String::from_utf8_lossy(&stdout[..stdout.len().min(200)]);
             return Err(anyhow!(
-                "benchmark --cmd exited {} (expected 0). the evaluation script must succeed for its metric_value to be auditable.\n  cmd:    {}\n  stdout: {:?}{}",
+                "{} --cmd exited {} (expected 0). the script must succeed for its reported value to be auditable.\n  cmd:    {}\n  stdout: {:?}{}",
+                m.as_str(),
                 actual_exit,
                 cmd,
                 preview,
@@ -1064,6 +1093,11 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
         metric: None,
         metric_value: None,
         threshold: None,
+        estimator: None,
+        point_value: None,
+        ci_lower: None,
+        ci_upper: None,
+        confidence_level: None,
         recorded_at: Utc::now(),
     };
     claim.evidence.push(ev);
@@ -1194,6 +1228,11 @@ fn refute_evidence(by: u64, reason: String) -> Evidence {
         metric: None,
         metric_value: None,
         threshold: None,
+        estimator: None,
+        point_value: None,
+        ci_lower: None,
+        ci_upper: None,
+        confidence_level: None,
         recorded_at: Utc::now(),
     }
 }

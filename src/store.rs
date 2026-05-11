@@ -212,9 +212,7 @@ pub fn validate_evidence(ev: &Evidence, store: &Store, current_seq: u64) -> Resu
         ReplayTest => validate_replay_test(ev),
         StatTest => validate_stat_test(ev),
         Benchmark => validate_benchmark(ev),
-        Estimate => Err(anyhow!(
-            "benchmark method validator not yet wired (estimate is pending m-589f). this branch should not be reachable."
-        )),
+        Estimate => validate_estimate(ev),
         Observed => validate_observed(ev),
         Documented => validate_documented(ev),
         Derived => validate_derived(ev, store, current_seq),
@@ -346,6 +344,79 @@ fn validate_benchmark(ev: &Evidence) -> Result<()> {
         return Err(anyhow!(
             "benchmark refused: metric_value={} did not meet threshold={} for metric '{}' ({}).\nstate stays pending; either fix the eval, lower the threshold honestly, or write a different claim if the miss is the actual finding.",
             v, t, metric.as_str(), dir,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_estimate(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("estimate requires --ref <path-to-output>"));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "estimate requires --cmd \"<shell cmd that computes the estimator>\". the cmd is executed at verify time and the captured stdout is hashed for drift detection."
+        ));
+    }
+    if ev.estimator.is_none() {
+        return Err(anyhow!(
+            "estimate requires --estimator <name>. valid: mean | median | geometric-mean | std-dev | std-error | variance | skewness | kurtosis | cohens-d | odds-ratio | risk-ratio | correlation | spearman-rho."
+        ));
+    }
+    let point = ev
+        .point_value
+        .ok_or_else(|| anyhow!("estimate requires --point-value <float>"))?;
+    if !point.is_finite() {
+        return Err(anyhow!(
+            "estimate --point-value must be finite (got {}). NaN/inf are not measurable values.",
+            point
+        ));
+    }
+    let lo = ev
+        .ci_lower
+        .ok_or_else(|| anyhow!("estimate requires --ci-lower <float>"))?;
+    let hi = ev
+        .ci_upper
+        .ok_or_else(|| anyhow!("estimate requires --ci-upper <float>"))?;
+    if !lo.is_finite() || !hi.is_finite() {
+        return Err(anyhow!(
+            "estimate CI bounds must be finite (got ci_lower={}, ci_upper={}).",
+            lo, hi
+        ));
+    }
+    if lo > hi {
+        return Err(anyhow!(
+            "estimate --ci-lower={} > --ci-upper={}. lower bound must be ≤ upper bound.",
+            lo, hi
+        ));
+    }
+    if point < lo || point > hi {
+        return Err(anyhow!(
+            "estimate --point-value={} is outside the declared CI [{}, {}]. the point estimate must lie within its own interval; otherwise the CI is misreported.",
+            point, lo, hi
+        ));
+    }
+    let conf = ev
+        .confidence_level
+        .ok_or_else(|| anyhow!("estimate requires --confidence-level <float in (0, 1)>, e.g. 0.95"))?;
+    if !conf.is_finite() || conf <= 0.0 || conf >= 1.0 {
+        return Err(anyhow!(
+            "estimate --confidence-level must be in (0, 1) (got {}). typical values: 0.90, 0.95, 0.99.",
+            conf
+        ));
+    }
+    let n = ev
+        .sample_size
+        .ok_or_else(|| anyhow!("estimate requires --sample-size <int>"))?;
+    if n < 2 {
+        return Err(anyhow!(
+            "estimate --sample-size must be >= 2 (got {}). a CI from a single sample is not measurable.",
+            n
+        ));
+    }
+    if ev.data_source.is_none() {
+        return Err(anyhow!(
+            "estimate requires --data-source <real|live>. estimators on synthetic data only describe the simulator (circular)."
         ));
     }
     Ok(())

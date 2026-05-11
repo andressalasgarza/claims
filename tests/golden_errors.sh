@@ -111,6 +111,35 @@ run_case "benchmark: missing --threshold" \
 run_case "benchmark: --metric on prop-test" \
   "$CLMS" verify "$CLAIM_ID" --method=prop-test --ref="x" --cmd="echo" --exit-code=0 --metric=f1
 
+# --- estimate method ---
+# unknown estimator
+run_case "estimate: unknown estimator 'GaussianMode'" \
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=GaussianMode --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd="echo"
+
+# point outside CI
+run_case "estimate: point outside CI" \
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=2.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd="echo"
+
+# ci_lower > ci_upper
+run_case "estimate: ci_lower > ci_upper" \
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=1.0 --ci-lower=1.5 --ci-upper=0.5 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd="echo"
+
+# confidence_level out of range
+run_case "estimate: confidence_level=1.5 (out of range)" \
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=1.5 --sample-size=100 --data-source=real --cmd="echo"
+
+# confidence_level=0 (boundary)
+run_case "estimate: confidence_level=0 (boundary)" \
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0 --sample-size=100 --data-source=real --cmd="echo"
+
+# non-finite point
+run_case "estimate: point_value Inf" \
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=Infinity --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd="echo"
+
+# --estimator on observed (exclusive-flag violation)
+run_case "estimate: --estimator on observed" \
+  "$CLMS" verify "$CLAIM_ID" --method=observed --ref="x" --estimator=mean
+
 # --- missing required field per method ---
 run_case "prop-test missing --cmd" \
   "$CLMS" verify "$CLAIM_ID" --method=prop-test --exit-code=0 --ref="x"

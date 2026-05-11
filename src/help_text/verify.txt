@@ -18,6 +18,15 @@ EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
                     gate: metric_value >= threshold (higher-better) or <= (lower-better)
                     cmd execution: --cmd is run at verify time. exit_code must be 0.
                     stdout_hash captured for rerun drift detection.
+  estimate          --ref --cmd --estimator --point-value --ci-lower --ci-upper
+                    --confidence-level --sample-size --data-source
+                    --estimator: closed enum, one of:
+                      mean | median | geometric-mean | std-dev | std-error | variance
+                      skewness | kurtosis | cohens-d | odds-ratio | risk-ratio
+                      correlation | spearman-rho
+                    gate: ci_lower <= point_value <= ci_upper AND 0 < confidence_level < 1.
+                    cmd execution: --cmd is run at verify time. exit_code must be 0.
+                    stdout_hash captured for rerun drift detection.
   observed          --ref                              (file | URL | sha256:HEX)
   documented        --ref --quote "<exact text from doc>"
   derived           --from <id> --from <id>            (min 2, each must exist + be verified)
@@ -85,8 +94,14 @@ EXAMPLES
     --sample-size 5000 --data-source real \
     --cmd "python3 ./eval.py --holdout ./data/test.parquet"
 
+  # estimate: mean with 95% CI on real returns
+  clms verify 6 --method estimate --ref ./estimator_out.json \
+    --estimator mean --point-value 0.0042 --ci-lower 0.0038 --ci-upper 0.0046 \
+    --confidence-level 0.95 --sample-size 8760 --data-source real \
+    --cmd "python3 ./est.py --series ./data/eth_1h_returns.parquet"
+
   # documented source
-  clms verify 6 --method documented --ref https://docs.poly.com/api/limits \
+  clms verify 7 --method documented --ref https://docs.poly.com/api/limits \
     --quote "default rate limit is 100 requests per minute"
 
 FALSIFICATION SURFACES
@@ -95,6 +110,7 @@ FALSIFICATION SURFACES
   replay-test       frozen real-world data at --dataset can disagree
   stat-test         real/live samples can fail to reject the null
   benchmark         measured metric on held-out real data can miss the threshold
+  estimate          replicated computation can yield a CI disjoint from the claimed one
   observed          the artifact can be missing or contradictory
   documented        the quote can be missing, edited, or contradicted
   derived           upstream claims can be refuted (cascade)
