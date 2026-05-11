@@ -54,7 +54,7 @@ clms verify 1 \
 clms add "we can arb this lag with fast router" --depends-on 1 --tag strategy:arb
 # → #2
 
-clms verify 2 --method integration-test --ref ./router_bench.sh --exit-code 0 \
+clms verify 2 --method integration-test --ref ./router_bench.sh \
   --target https://api.binance.com --cmd "bash ./router_bench.sh"
 # → #2 [verified · empirical]
 
@@ -115,17 +115,24 @@ each method requires specific fields. missing any → exit 1, no claim is writte
 
 | method | required flags | falsification surface |
 |---|---|---|
-| `prop-test` | `--ref` `--exit-code` `--cmd` | randomized input generator (proptest/quickcheck/fuzz) |
-| `integration-test` | `--ref` `--exit-code` `--target` `--cmd` | the real external system at `--target` |
-| `replay-test` | `--ref` `--exit-code` `--dataset` `--cmd` | frozen real-world capture at `--dataset` |
-| `stat-test` | `--ref` `--test-type` `--p-value` `--sample-size` `--data-source` | real \| live samples (simulated refused) |
-| `observed` | `--ref` | a captured artifact |
+| `prop-test` | `--ref` `--cmd` | randomized input generator (proptest/quickcheck/fuzz) |
+| `integration-test` | `--ref` `--target` `--cmd` | the real external system at `--target` (loopback / RFC1918 refused unless `--allow-local`) |
+| `replay-test` | `--ref` `--dataset` `--cmd` | frozen real-world capture at `--dataset` |
+| `stat-test` | `--ref` `--test-type` `--p-value` `--sample-size` `--data-source` | real \| live samples (simulated refused; `p ∈ [0,1]`, `n ≥ 2`) |
+| `observed` | `--ref` (file / URL / `sha256:HEX`) | a captured artifact |
 | `documented` | `--ref` `--quote "<exact text>"` | primary-source document |
-| `derived` | `--from <id>` `--from <id>` (min 2) | upstream claims (cascade on refute) |
+| `derived` | `--from <id>` `--from <id>` (min 2, each verified, no cycles, no self) | upstream claims (cascade on refute) |
+
+for `prop-test` / `integration-test` / `replay-test`, `--cmd` is **executed**
+at verify time. clms captures the actual `exit_code` and `stdout_hash`. the
+optional `--exit-code` flag is reinterpreted as a *predicted* value:
+mismatch with the actual exit is a hard error before any state mutation.
 
 local file refs (and `--dataset` on replay-test) are content-hashed at write
-time. tampering is detectable. `--data-source=simulated` is rejected at
-parse time.
+time. tampering is detectable via three drift checks: ref drift (same path,
+different bytes), dataset drift (same dataset path, different bytes), and
+rename drift (same bytes, different ref). `--data-source=simulated` is
+rejected at parse time.
 
 ## edges
 
@@ -294,8 +301,10 @@ clms archaeology commit --from-plan survivors.json --keep 8
 
 # 4. promote each pending claim to verified when you actually run the test
 #    pick the method that matches the falsification surface:
-clms verify <id> --method prop-test --ref <path> --exit-code 0 --cmd "..."
+clms verify <id> --method prop-test --ref <path> --cmd "..."
 # or integration-test --target ... / replay-test --dataset ... / stat-test --data-source real
+# --cmd is executed at verify; actual exit_code captured. --exit-code is
+# optional and treated as a predicted value (mismatch → hard error).
 ```
 
 ### orchestration recipe (pi-subagents)

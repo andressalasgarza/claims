@@ -1,4 +1,4 @@
-use crate::models::{Claim, Edge, EdgeType, Evidence, State};
+use crate::models::{Claim, EdgeType, Evidence, State};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
 use std::fs;
@@ -695,5 +695,3 @@ CREATE TABLE IF NOT EXISTS edges (
 );
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_seq);
 "#;
-
-pub fn _used(_: &Edge) {}

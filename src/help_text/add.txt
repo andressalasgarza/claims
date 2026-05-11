@@ -10,3 +10,8 @@ NOTES
   - --unverifiable is for claims you genuinely cannot test (subjective,
     future-dependent). honesty bucket. otherwise the claim starts pending.
   - claim text should be falsifiable. "x lags y by ~300ms" not "latency is bad".
+  - --git-sha and --created-at are provenance overrides for archaeology /
+    historical reconstruction. they require CLAIMS_BACKFILL=1 in the
+    environment to use. claims born with either override are stamped
+    `backfilled: true` on disk and rendered with [backfilled] in human
+    output so a reviewer can distinguish live from retroactive provenance.
