@@ -78,3 +78,29 @@ For more information, try '--help'.
 exit=1
 Error: derived requires at least two --from <claim_id> entries
 
+=== min_tier: invalid tier name ===
++ target/release/clms add claim with bogus tier --min-tier=epirical
+exit=1
+Error: invalid tier 'epirical'. valid: empirical | observed | documented | derived
+
+=== min_tier: refuse observed against empirical floor ===
++ target/release/clms verify 2 --method=observed --ref=TMPDIR/artifact.txt
+exit=1
+Error: claim #2 requires min_tier=empirical (got method 'observed' at tier observed). allowed methods: prop-test | integration-test | replay-test | stat-test.
+
+this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
+
+=== min_tier: refuse documented against empirical floor ===
++ target/release/clms verify 2 --method=documented --ref=https://docs.example.com --quote=the api returns 200
+exit=1
+Error: claim #2 requires min_tier=empirical (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test.
+
+this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
+
+=== min_tier: refuse documented against observed floor ===
++ target/release/clms verify 3 --method=documented --ref=https://docs.example.com --quote=text
+exit=1
+Error: claim #3 requires min_tier=observed (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | observed.
+
+this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
+

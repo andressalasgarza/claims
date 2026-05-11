@@ -3,6 +3,7 @@ EXAMPLES
   clms add "polymarket api rate limit is 60/min" --tag infra
   clms add "we can arb this lag" --depends-on 1 --depends-on 3 --tag strategy
   clms add "mm bots withdraw at >50k size" --unverifiable --tag market
+  clms add "ETH 1h-return distribution rejects uniform at p<0.01" --min-tier empirical
 
 NOTES
   - --depends-on registers prerequisite claims. if any is later refuted with
@@ -15,3 +16,9 @@ NOTES
     environment to use. claims born with either override are stamped
     `backfilled: true` on disk and rendered with [backfilled] in human
     output so a reviewer can distinguish live from retroactive provenance.
+  - --min-tier stamps an evidence-tier floor on the claim at write time.
+    valid: empirical | observed | documented | derived. when set, clms
+    verify refuses to mark this claim Verified using evidence below the
+    floor. use --min-tier empirical for science claims so a downstream
+    agent cannot satisfy them with observed/documented evidence. claims
+    without --min-tier behave exactly as before (no gate).

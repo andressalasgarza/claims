@@ -79,6 +79,16 @@ FALSIFICATION SURFACES
   documented        the quote can be missing, edited, or contradicted
   derived           upstream claims can be refuted (cascade)
 
+MIN_TIER GATE
+  if the claim was created with `clms add --min-tier <tier>`, verify refuses
+  to mark it Verified using evidence below that floor. tier ladder (strongest
+  to weakest): empirical > observed > documented > derived. example: a claim
+  stamped `min_tier=empirical` cannot be Verified by `--method observed`,
+  `--method documented`, or `--method derived` — only by prop-test,
+  integration-test, replay-test, or stat-test. the error lists the eligible
+  methods at the declared floor. claims without min_tier behave exactly as
+  before (no gate, all methods accepted).
+
 DRIFT (three checks, all gated by --acknowledge-drift)
   - ref drift:      same --ref string, different content hash. the file
                     behind the ref changed since prior evidence.

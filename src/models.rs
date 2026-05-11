@@ -44,6 +44,29 @@ impl ConfidenceTier {
             ConfidenceTier::Derived => "derived",
         }
     }
+
+    /// parse a user-facing tier name. accepts kebab-case as written by agents
+    /// on `clms add --min-tier <name>`. unknown names produce a hard error
+    /// listing the valid set so an LLM cannot bluff its way through.
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "empirical" => Ok(ConfidenceTier::Empirical),
+            "observed" => Ok(ConfidenceTier::Observed),
+            "documented" => Ok(ConfidenceTier::Documented),
+            "derived" => Ok(ConfidenceTier::Derived),
+            other => Err(anyhow::anyhow!(
+                "invalid tier '{}'. valid: empirical | observed | documented | derived",
+                other
+            )),
+        }
+    }
+
+    /// true if `self` is at least as strong as `floor`. encapsulates the
+    /// ordering direction (Empirical=4 strongest, Derived=1 weakest) so the
+    /// comparison cannot silently flip if the discriminants are ever renumbered.
+    pub fn is_at_least(self, floor: ConfidenceTier) -> bool {
+        (self as u8) >= (floor as u8)
+    }
 }
 
 /// every method has a falsification surface — a data source the author does not
@@ -354,6 +377,14 @@ pub struct Claim {
     /// retroactively asserted by an agent". additive; absent on old records.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub backfilled: bool,
+    /// opt-in evidence-tier floor. when set, `clms verify` refuses to
+    /// transition pending -> verified using evidence whose tier is below
+    /// this floor. lets an orchestrator declare "this is a science claim,
+    /// demand empirical evidence" at write time and have clms enforce the
+    /// intent structurally — agents cannot shop down to observed at verify
+    /// time. additive; claims without min_tier behave exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_tier: Option<ConfidenceTier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

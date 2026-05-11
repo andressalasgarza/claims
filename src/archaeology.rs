@@ -790,6 +790,10 @@ fn build_pending_claim(
         // marking backfilled=true gives reviewers a structural signal in
         // addition to the existing archaeology_meta tag.
         backfilled: true,
+        // archaeology does not pre-declare a tier floor for reconstructed
+        // claims — the orchestrator/operator decides post-commit whether to
+        // stamp one via a separate workflow. additive default = None.
+        min_tier: None,
     })
 }
 

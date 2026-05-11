@@ -28,16 +28,24 @@ cd "$TMP"
 "$CLMS" add "fixture claim for golden error tests" > /dev/null 2>&1
 CLAIM_ID=$("$CLMS" timeline 2>/dev/null | awk '{print $1}' | head -1 | tr -d '#')
 
+# normalize paths so the golden output is reproducible across runs and machines.
+# - strip REPO_ROOT so the clms binary shows up as 'target/release/clms'
+# - collapse mktemp tempdirs (macOS /var/folders/... and linux /tmp/...) to TMPDIR
+normalize() {
+  sed -e "s|$REPO_ROOT/||g" -e "s|$TMP|TMPDIR|g" \
+      -e 's|/var/folders/[A-Za-z0-9_/+]*/T/tmp\.[A-Za-z0-9]*|TMPDIR|g'
+}
+
 run_case() {
   local label="$1"; shift
   echo "=== $label ==="
-  echo "+ $*"
+  echo "+ $*" | normalize
   set +e
   out=$("$@" 2>&1)
   code=$?
   set -e
   echo "exit=$code"
-  echo "$out"
+  echo "$out" | normalize
   echo
 }
 
@@ -92,3 +100,32 @@ run_case "observed missing --ref" \
 
 run_case "derived missing --from" \
   "$CLMS" verify "$CLAIM_ID" --method=derived --ref="x"
+
+# --- min_tier gate ---
+# invalid tier name on add
+run_case "min_tier: invalid tier name" \
+  "$CLMS" add "claim with bogus tier" --min-tier=epirical
+
+# helper: add claim & capture its newly-assigned seq (largest seq in timeline)
+new_seq() {
+  "$CLMS" timeline 2>/dev/null | awk '{print $1}' | tr -d '#' | sort -n | tail -1
+}
+
+# claim w/ min_tier=empirical, then verify with observed (using a real file ref
+# so the bare-string-ref check doesn't fire first and mask the min_tier gate)
+"$CLMS" add "science claim, demands empirical" --min-tier=empirical > /dev/null 2>&1
+MIN_TIER_ID=$(new_seq)
+echo "artifact body" > "$TMP/artifact.txt"
+
+run_case "min_tier: refuse observed against empirical floor" \
+  "$CLMS" verify "$MIN_TIER_ID" --method=observed --ref="$TMP/artifact.txt"
+
+run_case "min_tier: refuse documented against empirical floor" \
+  "$CLMS" verify "$MIN_TIER_ID" --method=documented --ref="https://docs.example.com" --quote="the api returns 200"
+
+# claim w/ min_tier=observed, then refuse documented (which is below observed)
+"$CLMS" add "observed-floor claim" --min-tier=observed > /dev/null 2>&1
+OBS_TIER_ID=$(new_seq)
+
+run_case "min_tier: refuse documented against observed floor" \
+  "$CLMS" verify "$OBS_TIER_ID" --method=documented --ref="https://docs.example.com" --quote="text"

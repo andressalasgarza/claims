@@ -102,6 +102,11 @@ pub fn schema_value() -> Value {
             {"name": "observed",   "rank": 3},
             {"name": "empirical",  "rank": 4}
         ],
+        "min_tier": {
+            "description": "opt-in tier floor stamped on a claim at write time. when set, `clms verify` refuses to mark the claim verified using evidence below the floor. set via `clms add --min-tier <tier>`. valid: empirical | observed | documented | derived.",
+            "semantics": "evidence.method.tier (looked up via the methods table) is compared to claim.min_tier. evidence at or above the floor is accepted; below the floor is refused with a list of allowed methods at the floor.",
+            "backward_compat": "absent on claims that did not set it; behaves exactly as pre-feature when absent."
+        },
         "edge_types": ["depends_on", "tests", "supports", "refines", "refutes"],
         "output_formats": ["default", "human", "ai"],
         "exit_codes": {

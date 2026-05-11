@@ -84,6 +84,7 @@ fn render_claim_ai(c: &Claim, store: &Store) -> Result<String> {
         "dependents": dependents_seqs(store, c.seq)?,
         "evidence_count": c.evidence.len(),
         "backfilled": c.backfilled,
+        "min_tier": c.min_tier.map(|t| t.as_str()),
     });
     Ok(serde_json::to_string(&val)?)
 }
@@ -120,13 +121,18 @@ fn evidence_extras(e: &Evidence) -> String {
 
 fn header_block(c: &Claim) -> String {
     let backfill_tag = if c.backfilled { " [backfilled]" } else { "" };
+    let min_tier_tag = c
+        .min_tier
+        .map(|t| format!(" [min_tier={}]", t.as_str()))
+        .unwrap_or_default();
     let mut s = format!(
-        "#{:<4} [{} · {}]  {}{}\n",
+        "#{:<4} [{} · {}]  {}{}{}\n",
         c.seq,
         c.state.as_str(),
         confidence_str(c),
         c.text,
         backfill_tag,
+        min_tier_tag,
     );
     s.push_str(&format!(
         "id: {}  agent: {}  session: {}  git: {}\n",

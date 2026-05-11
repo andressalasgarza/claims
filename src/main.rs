@@ -11,7 +11,10 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use colored::*;
-use models::{Claim, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, State, SCHEMA_VERSION};
+use models::{
+    Claim, ConfidenceTier, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, State,
+    SCHEMA_VERSION,
+};
 use output::OutputFormat;
 use std::path::PathBuf;
 use store::{
@@ -190,6 +193,12 @@ struct AddArgs {
     /// override the auto-stamped created_at timestamp (RFC3339). for backfill / archaeology workflows.
     #[arg(long = "created-at")]
     created_at_override: Option<String>,
+    /// opt-in evidence-tier floor. when set, `clms verify` refuses to mark
+    /// this claim Verified using evidence below the floor. valid values:
+    /// empirical | observed | documented | derived. orchestrator stamps this
+    /// on science claims so a downstream agent cannot satisfy with observed.
+    #[arg(long = "min-tier")]
+    min_tier: Option<String>,
 }
 
 #[derive(Args)]
@@ -641,6 +650,7 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
     // mark the record). future-me reading this claim can then see "this
     // git_sha and created_at were retroactively asserted, not auto-captured."
     let backfilled = a.created_at_override.is_some() || a.git_sha_override.is_some();
+    let min_tier = a.min_tier.as_deref().map(ConfidenceTier::parse).transpose()?;
     let mut claim = Claim {
         schema_version: SCHEMA_VERSION.into(),
         id: Ulid::new(),
@@ -662,6 +672,7 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
         content_hash: None,
         archaeology_meta: None,
         backfilled,
+        min_tier,
     };
     store.write_claim(&mut claim)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);
@@ -866,6 +877,29 @@ this one instead.",
             "duplicate evidence: claim #{} already has an entry with the same method, ref, and parameters. add new information (a different ref, exit_code, target, dataset, etc.) or write a new claim.",
             seq
         ));
+    }
+    // min_tier gate: if the claim was stamped with a tier floor at write time
+    // (orchestrator intent: "this is a science claim, demand empirical"),
+    // refuse the verify if the method's tier is below the floor. uses the
+    // METHODS table for tier lookup so it cannot drift from validation logic.
+    if let Some(floor) = claim.min_tier {
+        let ev_tier = ev.method.tier();
+        if !ev_tier.is_at_least(floor) {
+            use crate::models::METHODS;
+            let allowed: Vec<&str> = METHODS
+                .iter()
+                .filter(|m| m.tier.is_at_least(floor))
+                .map(|m| m.name)
+                .collect();
+            return Err(anyhow!(
+                "claim #{} requires min_tier={} (got method '{}' at tier {}). allowed methods: {}.\n\nthis claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.",
+                seq,
+                floor.as_str(),
+                m.as_str(),
+                ev_tier.as_str(),
+                allowed.join(" | "),
+            ));
+        }
     }
     claim.evidence.push(ev);
     claim.state = State::Verified;
