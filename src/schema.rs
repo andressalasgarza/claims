@@ -4,7 +4,7 @@
 //! changes here MUST be additive (new keys ok, removing or renaming keys
 //! is a breaking change). bump `version` whenever the shape changes.
 
-use crate::models::{HypothesisTest, METHODS, REFUSED_METHODS};
+use crate::models::{BenchmarkMetric, HypothesisTest, METHODS, REFUSED_METHODS};
 use serde_json::{json, Value};
 
 /// machine-readable dump of the method-descriptor table. agent introspection
@@ -160,6 +160,15 @@ pub fn schema_value() -> Value {
                 "data_source_values": ["real", "live"],
                 "test_type_values": HypothesisTest::all_names(),
                 "notes": "file at --ref is content-hashed for drift detection. test_type is a closed enum — unknown strings refused at parse time."
+            },
+            "benchmark": {
+                "required": ["ref", "cmd", "metric", "metric_value", "threshold", "sample_size", "data_source"],
+                "recommended": [],
+                "confidence": "empirical",
+                "falsification_surface": "measured metric on held-out real data vs declared threshold. miss the threshold and clms refuses verification.",
+                "data_source_values": ["real", "live"],
+                "metric_values": BenchmarkMetric::all_names(),
+                "notes": "each metric has fixed direction. higher-better: auc-roc, auc-pr, f1, precision, recall, accuracy, balanced-accuracy, mcc, kappa-cohen, r2. lower-better: log-loss, brier, rmse, mae, mape. file at --ref is content-hashed; --cmd is executed at verify time."
             },
             "observed": {
                 "required": ["ref"],

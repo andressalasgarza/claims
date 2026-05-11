@@ -12,8 +12,8 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use colored::*;
 use models::{
-    Claim, ConfidenceTier, DataSource, Edge, EdgeType, Evidence, EvidenceMethod, HypothesisTest,
-    State, SCHEMA_VERSION,
+    BenchmarkMetric, Claim, ConfidenceTier, DataSource, Edge, EdgeType, Evidence, EvidenceMethod,
+    HypothesisTest, State, SCHEMA_VERSION,
 };
 use output::OutputFormat;
 use std::path::PathBuf;
@@ -252,6 +252,19 @@ struct VerifyArgs {
     /// control" — a service on your own machine fails that test.
     #[arg(long)]
     allow_local: bool,
+    /// benchmark only: classifier/regression metric being measured.
+    #[arg(long, value_enum)]
+    metric: Option<BenchmarkMetric>,
+    /// benchmark only: agent-declared measured value of `metric` on held-out
+    /// data. compared against --threshold per direction (higher- or
+    /// lower-better, fixed per metric).
+    #[arg(long)]
+    metric_value: Option<f64>,
+    /// benchmark only: the pass threshold. for higher-better metrics
+    /// (auc, f1, accuracy, r2) metric_value >= threshold passes. for
+    /// lower-better (rmse, mae, log-loss) metric_value <= threshold passes.
+    #[arg(long)]
+    threshold: Option<f64>,
 }
 
 #[derive(Args)]
@@ -689,12 +702,15 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
 /// flag-bearing method requires no changes here.
 fn check_exclusive_flags(method: EvidenceMethod, a: &VerifyArgs) -> Result<()> {
     use crate::models::METHODS;
-    let present_flags: [(&str, bool); 3] = [
+    // single-owner flags: exactly one method owns each. driven by
+    // MethodSpec::exclusive_flag so adding a new flag-bearing method needs
+    // no changes here.
+    let single_owner_flags: [(&str, bool); 3] = [
         ("target", a.target.is_some()),
         ("dataset", a.dataset.is_some()),
-        ("data-source", a.data_source.is_some()),
+        ("metric", a.metric.is_some()),
     ];
-    for (flag_name, is_present) in present_flags {
+    for (flag_name, is_present) in single_owner_flags {
         if !is_present {
             continue;
         }
@@ -712,14 +728,32 @@ fn check_exclusive_flags(method: EvidenceMethod, a: &VerifyArgs) -> Result<()> {
             None => {} // flag has no exclusivity constraint
         }
     }
+    // data-source is shared by stat-test (real|live samples) and benchmark
+    // (eval set provenance). refuse it on every other method. cannot use
+    // the single-owner mechanism above since two methods legitimately
+    // accept it.
+    if a.data_source.is_some()
+        && !matches!(method, EvidenceMethod::StatTest | EvidenceMethod::Benchmark)
+    {
+        return Err(anyhow!(
+            "--data-source is only valid with --method stat-test or --method benchmark (got --method {})",
+            method.as_str()
+        ));
+    }
     Ok(())
 }
 
 fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
     check_exclusive_flags(m, a)?;
+    // data-source is parsed for stat-test and benchmark (the two methods that
+    // legitimately accept it). check_exclusive_flags has already refused it
+    // on every other method, so a non-None data-source here is guaranteed to
+    // belong to one of those two.
     let data_source = match (&m, &a.data_source) {
-        (EvidenceMethod::StatTest, Some(s)) => Some(DataSource::parse(s)?),
-        _ => None, // non-stat-test --data-source already rejected by check_exclusive_flags
+        (EvidenceMethod::StatTest | EvidenceMethod::Benchmark, Some(s)) => {
+            Some(DataSource::parse(s)?)
+        }
+        _ => None,
     };
     let dataset_hash = a.dataset.as_deref().and_then(hash_ref_if_local);
     let cmd_hash = a
@@ -744,6 +778,9 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
         dataset: a.dataset.clone(),
         dataset_hash,
         data_source,
+        metric: a.metric,
+        metric_value: a.metric_value,
+        threshold: a.threshold,
         recorded_at: Utc::now(),
     })
 }
@@ -824,6 +861,34 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
                     if stdout.len() > 200 { " ..." } else { "" },
                 ));
             }
+        }
+        ev.exit_code = Some(actual_exit);
+        ev.stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
+    }
+    // benchmark: execute --cmd to capture stdout_hash for drift detection on
+    // rerun. unlike prop/integration/replay, the gate signal is NOT exit_code
+    // — it's metric_value vs threshold, which validate_benchmark already
+    // enforced above. we still run --cmd so the eval is auditable on disk:
+    // an agent who lies about metric_value gets caught by the next reviewer
+    // re-running the captured cmd. capturing the actual exit_code too gives
+    // a cheap sanity check (a script that crashed but the agent reported a
+    // metric anyway is now visible).
+    if matches!(m, EvidenceMethod::Benchmark) {
+        let cmd = ev
+            .cmd
+            .as_deref()
+            .expect("validate_benchmark guarantees --cmd presence");
+        eprintln!("executing: {}", cmd);
+        let (actual_exit, stdout) = run_cmd(cmd)?;
+        if actual_exit != 0 {
+            let preview = String::from_utf8_lossy(&stdout[..stdout.len().min(200)]);
+            return Err(anyhow!(
+                "benchmark --cmd exited {} (expected 0). the evaluation script must succeed for its metric_value to be auditable.\n  cmd:    {}\n  stdout: {:?}{}",
+                actual_exit,
+                cmd,
+                preview,
+                if stdout.len() > 200 { " ..." } else { "" },
+            ));
         }
         ev.exit_code = Some(actual_exit);
         ev.stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
@@ -996,6 +1061,9 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
         dataset: prior_dataset,
         dataset_hash: new_dataset_hash,
         data_source: prior_data_source,
+        metric: None,
+        metric_value: None,
+        threshold: None,
         recorded_at: Utc::now(),
     };
     claim.evidence.push(ev);
@@ -1123,6 +1191,9 @@ fn refute_evidence(by: u64, reason: String) -> Evidence {
         dataset: None,
         dataset_hash: None,
         data_source: None,
+        metric: None,
+        metric_value: None,
+        threshold: None,
         recorded_at: Utc::now(),
     }
 }

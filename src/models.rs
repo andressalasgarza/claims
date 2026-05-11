@@ -90,12 +90,87 @@ pub enum EvidenceMethod {
     /// statistical hypothesis test on real or live data. simulated data refused.
     /// requires --ref --p-value --sample-size --test-type --data-source.
     StatTest,
+    /// classifier/regression metric measured against a declared threshold on
+    /// held-out real data. distinct from stat-test (no p-value, has threshold +
+    /// direction). requires --ref --cmd --metric --metric-value --threshold
+    /// --sample-size --data-source.
+    Benchmark,
+    /// point estimate with confidence interval. distinct from benchmark (CI
+    /// shape, not threshold). requires --ref --cmd --estimator --point-value
+    /// --ci-lower --ci-upper --confidence-level --sample-size --data-source.
+    Estimate,
     /// captured runtime artifact (tx hash, log line, response). requires --ref.
     Observed,
     /// primary-source documentation + exact quote. requires --ref --quote.
     Documented,
     /// inference from at least two other claims. requires --from N (>=2).
     Derived,
+}
+
+/// metrics accepted on `benchmark --metric`. each has a fixed direction:
+/// `is_higher_better()` tells the validator whether metric_value must be
+/// >= or <= threshold for verification to succeed.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum,
+)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum BenchmarkMetric {
+    AucRoc, AucPr, F1, Precision, Recall, Accuracy, BalancedAccuracy, Mcc,
+    KappaCohen, R2,
+    LogLoss, Brier, Rmse, Mae, Mape,
+}
+
+impl BenchmarkMetric {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BenchmarkMetric::AucRoc => "auc-roc",
+            BenchmarkMetric::AucPr => "auc-pr",
+            BenchmarkMetric::F1 => "f1",
+            BenchmarkMetric::Precision => "precision",
+            BenchmarkMetric::Recall => "recall",
+            BenchmarkMetric::Accuracy => "accuracy",
+            BenchmarkMetric::BalancedAccuracy => "balanced-accuracy",
+            BenchmarkMetric::Mcc => "mcc",
+            BenchmarkMetric::KappaCohen => "kappa-cohen",
+            BenchmarkMetric::R2 => "r2",
+            BenchmarkMetric::LogLoss => "log-loss",
+            BenchmarkMetric::Brier => "brier",
+            BenchmarkMetric::Rmse => "rmse",
+            BenchmarkMetric::Mae => "mae",
+            BenchmarkMetric::Mape => "mape",
+        }
+    }
+
+    /// true if higher metric_value is better (AUC, F1, accuracy, R² family).
+    /// false if lower is better (loss / error metrics).
+    pub fn is_higher_better(&self) -> bool {
+        match self {
+            BenchmarkMetric::AucRoc
+            | BenchmarkMetric::AucPr
+            | BenchmarkMetric::F1
+            | BenchmarkMetric::Precision
+            | BenchmarkMetric::Recall
+            | BenchmarkMetric::Accuracy
+            | BenchmarkMetric::BalancedAccuracy
+            | BenchmarkMetric::Mcc
+            | BenchmarkMetric::KappaCohen
+            | BenchmarkMetric::R2 => true,
+            BenchmarkMetric::LogLoss
+            | BenchmarkMetric::Brier
+            | BenchmarkMetric::Rmse
+            | BenchmarkMetric::Mae
+            | BenchmarkMetric::Mape => false,
+        }
+    }
+
+    pub fn all_names() -> &'static [&'static str] {
+        &[
+            "auc-roc", "auc-pr", "f1", "precision", "recall", "accuracy",
+            "balanced-accuracy", "mcc", "kappa-cohen", "r2",
+            "log-loss", "brier", "rmse", "mae", "mape",
+        ]
+    }
 }
 
 /// for `stat-test`. simulated data is refused; the data must come from a source
@@ -289,7 +364,21 @@ pub const METHODS: &[MethodSpec] = &[
         runnable: true,
         falsification_surface: "real or live samples (simulated refused)",
         required_fields: &["ref", "p_value", "sample_size", "test_type", "data_source"],
-        exclusive_flag: Some("data-source"),
+        // data-source is shared with benchmark in 1.2; exclusive_flag's
+        // single-owner mechanism cannot express that, so the data-source
+        // gate is special-cased in check_exclusive_flags instead.
+        exclusive_flag: None,
+    },
+    MethodSpec {
+        name: "benchmark",
+        variant: EvidenceMethod::Benchmark,
+        tier: ConfidenceTier::Empirical,
+        runnable: true,
+        falsification_surface: "measured metric on held-out real data vs declared threshold",
+        required_fields: &[
+            "ref", "cmd", "metric", "metric_value", "threshold", "sample_size", "data_source",
+        ],
+        exclusive_flag: Some("metric"),
     },
     MethodSpec {
         name: "observed",
@@ -410,6 +499,19 @@ pub struct Evidence {
     /// stat-test: required. real | live (simulated/synthetic refused at parse time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_source: Option<DataSource>,
+    /// benchmark: required. classifier/regression metric being measured.
+    /// direction (higher- or lower-better) is fixed per variant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<BenchmarkMetric>,
+    /// benchmark: required. agent-declared measured value of `metric` on the
+    /// held-out evaluation. clms compares against `threshold` per direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric_value: Option<f64>,
+    /// benchmark: required. the pass threshold. for higher-better metrics,
+    /// metric_value >= threshold passes. for lower-better, metric_value <=
+    /// threshold passes. mismatch = hard refusal, no state transition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
     pub recorded_at: DateTime<Utc>,
 }
 

@@ -10,6 +10,14 @@ EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
                       t-test-paired | t-test-unpaired | t-test-one-sample | welch-t
                       anova | kolmogorov-smirnov | mann-whitney-u | wilcoxon-signed-rank
                       shapiro-wilk | anderson-darling | fisher | permutation | likelihood-ratio
+  benchmark         --ref --cmd --metric --metric-value --threshold --sample-size --data-source
+                    --metric: closed enum, direction fixed per variant.
+                      higher-better: auc-roc | auc-pr | f1 | precision | recall | accuracy |
+                                     balanced-accuracy | mcc | kappa-cohen | r2
+                      lower-better:  log-loss | brier | rmse | mae | mape
+                    gate: metric_value >= threshold (higher-better) or <= (lower-better)
+                    cmd execution: --cmd is run at verify time. exit_code must be 0.
+                    stdout_hash captured for rerun drift detection.
   observed          --ref                              (file | URL | sha256:HEX)
   documented        --ref --quote "<exact text from doc>"
   derived           --from <id> --from <id>            (min 2, each must exist + be verified)
@@ -71,8 +79,14 @@ EXAMPLES
     --test-type kolmogorov-smirnov --p-value 0.003 --sample-size 4821 --data-source real \
     --cmd "python3 ./test.py"
 
+  # benchmark: classifier evaluation against threshold
+  clms verify 5 --method benchmark --ref ./eval_output.json \
+    --metric auc-roc --metric-value 0.84 --threshold 0.80 \
+    --sample-size 5000 --data-source real \
+    --cmd "python3 ./eval.py --holdout ./data/test.parquet"
+
   # documented source
-  clms verify 5 --method documented --ref https://docs.poly.com/api/limits \
+  clms verify 6 --method documented --ref https://docs.poly.com/api/limits \
     --quote "default rate limit is 100 requests per minute"
 
 FALSIFICATION SURFACES
@@ -80,6 +94,7 @@ FALSIFICATION SURFACES
   integration-test  the real external system at --target can disagree
   replay-test       frozen real-world data at --dataset can disagree
   stat-test         real/live samples can fail to reject the null
+  benchmark         measured metric on held-out real data can miss the threshold
   observed          the artifact can be missing or contradictory
   documented        the quote can be missing, edited, or contradicted
   derived           upstream claims can be refuted (cascade)

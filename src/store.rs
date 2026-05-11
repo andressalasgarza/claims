@@ -211,6 +211,10 @@ pub fn validate_evidence(ev: &Evidence, store: &Store, current_seq: u64) -> Resu
         IntegrationTest => validate_integration_test(ev),
         ReplayTest => validate_replay_test(ev),
         StatTest => validate_stat_test(ev),
+        Benchmark => validate_benchmark(ev),
+        Estimate => Err(anyhow!(
+            "benchmark method validator not yet wired (estimate is pending m-589f). this branch should not be reachable."
+        )),
         Observed => validate_observed(ev),
         Documented => validate_documented(ev),
         Derived => validate_derived(ev, store, current_seq),
@@ -275,6 +279,73 @@ fn validate_replay_test(ev: &Evidence) -> Result<()> {
     if missing_str(&ev.cmd) {
         return Err(anyhow!(
             "replay-test requires --cmd \"<shell cmd that replayed --dataset through --ref>\"."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_benchmark(ev: &Evidence) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("benchmark requires --ref <path-to-eval-output>"));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "benchmark requires --cmd \"<shell cmd that runs the eval and prints the metric>\". the cmd is executed at verify time and the captured stdout is hashed for drift detection."
+        ));
+    }
+    let metric = ev.metric.ok_or_else(|| {
+        anyhow!(
+            "benchmark requires --metric <name>. valid: auc-roc | auc-pr | f1 | precision | recall | accuracy | balanced-accuracy | mcc | kappa-cohen | r2 | log-loss | brier | rmse | mae | mape."
+        )
+    })?;
+    let v = ev
+        .metric_value
+        .ok_or_else(|| anyhow!("benchmark requires --metric-value <float>"))?;
+    if !v.is_finite() {
+        return Err(anyhow!(
+            "benchmark --metric-value must be finite (got {}). NaN/inf are not measurable values.",
+            v
+        ));
+    }
+    let t = ev
+        .threshold
+        .ok_or_else(|| anyhow!("benchmark requires --threshold <float>"))?;
+    if !t.is_finite() {
+        return Err(anyhow!(
+            "benchmark --threshold must be finite (got {}). NaN/inf are not measurable thresholds.",
+            t
+        ));
+    }
+    let n = ev
+        .sample_size
+        .ok_or_else(|| anyhow!("benchmark requires --sample-size <int>"))?;
+    if n < 2 {
+        return Err(anyhow!(
+            "benchmark --sample-size must be >= 2 (got {}). a metric computed on one sample is not measurable evidence.",
+            n
+        ));
+    }
+    if ev.data_source.is_none() {
+        return Err(anyhow!(
+            "benchmark requires --data-source <real|live>. synthetic eval sets cannot falsify a claim about real-world performance."
+        ));
+    }
+    // direction check: enforce metric_value passes threshold per metric direction.
+    // higher-better: value >= threshold passes. lower-better: value <= threshold passes.
+    let passes = if metric.is_higher_better() {
+        v >= t
+    } else {
+        v <= t
+    };
+    if !passes {
+        let dir = if metric.is_higher_better() {
+            "higher-better, need value >= threshold"
+        } else {
+            "lower-better, need value <= threshold"
+        };
+        return Err(anyhow!(
+            "benchmark refused: metric_value={} did not meet threshold={} for metric '{}' ({}).\nstate stays pending; either fix the eval, lower the threshold honestly, or write a different claim if the miss is the actual finding.",
+            v, t, metric.as_str(), dir,
         ));
     }
     Ok(())

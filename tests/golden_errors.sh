@@ -86,6 +86,31 @@ run_case "stat-test: unknown test_type 'AUC'" \
 run_case "stat-test: unknown test_type 'my-cool-test'" \
   "$CLMS" verify "$CLAIM_ID" --method=stat-test --ref="x" --test-type=my-cool-test --p-value=0.01 --sample-size=100 --data-source=real
 
+# --- benchmark method ---
+# unknown metric
+run_case "benchmark: unknown metric 'NDCG'" \
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=NDCG --metric-value=0.5 --threshold=0.3 --sample-size=100 --data-source=real --cmd="echo"
+
+# higher-better metric: value below threshold refused
+run_case "benchmark: AUC 0.6 below threshold 0.8 (higher-better)" \
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=auc-roc --metric-value=0.6 --threshold=0.8 --sample-size=1000 --data-source=real --cmd="echo"
+
+# lower-better metric: value above threshold refused
+run_case "benchmark: RMSE 0.9 above threshold 0.3 (lower-better)" \
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=rmse --metric-value=0.9 --threshold=0.3 --sample-size=1000 --data-source=real --cmd="echo"
+
+# non-finite metric_value
+run_case "benchmark: metric_value NaN" \
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=f1 --metric-value=NaN --threshold=0.5 --sample-size=100 --data-source=real --cmd="echo"
+
+# missing --threshold
+run_case "benchmark: missing --threshold" \
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=f1 --metric-value=0.8 --sample-size=100 --data-source=real --cmd="echo"
+
+# --metric on prop-test (exclusive-flag violation)
+run_case "benchmark: --metric on prop-test" \
+  "$CLMS" verify "$CLAIM_ID" --method=prop-test --ref="x" --cmd="echo" --exit-code=0 --metric=f1
+
 # --- missing required field per method ---
 run_case "prop-test missing --cmd" \
   "$CLMS" verify "$CLAIM_ID" --method=prop-test --exit-code=0 --ref="x"

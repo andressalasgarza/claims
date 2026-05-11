@@ -16,7 +16,7 @@ Error: method 'sim-test' is not a valid evidence method. running a stat-test on 
 === unknown: bogus-method ===
 + target/release/clms verify 1 --method=bogus-method --cmd=echo --exit-code=0 --ref=x
 exit=1
-Error: invalid method 'bogus-method'. valid: prop-test|integration-test|replay-test|stat-test|observed|documented|derived
+Error: invalid method 'bogus-method'. valid: prop-test|integration-test|replay-test|stat-test|benchmark|observed|documented|derived
 
 === cross-flag: --target on prop-test ===
 + target/release/clms verify 1 --method=prop-test --cmd=echo --exit-code=0 --ref=x --target=https://api.example.com
@@ -31,7 +31,7 @@ Error: --dataset is only valid with --method replay-test (got --method prop-test
 === cross-flag: --data-source on prop-test ===
 + target/release/clms verify 1 --method=prop-test --cmd=echo --exit-code=0 --ref=x --data-source=real
 exit=1
-Error: --data-source is only valid with --method stat-test (got --method prop-test)
+Error: --data-source is only valid with --method stat-test or --method benchmark (got --method prop-test)
 
 === simulated rejected on stat-test ===
 + target/release/clms verify 1 --method=stat-test --cmd=echo --exit-code=0 --ref=x --data-source=simulated
@@ -53,6 +53,41 @@ error: invalid value 'my-cool-test' for '--test-type <TEST_TYPE>'
   [possible values: chi-squared, chi-squared-goodness-of-fit, t-test-paired, t-test-unpaired, t-test-one-sample, welch-t, anova, kolmogorov-smirnov, mann-whitney-u, wilcoxon-signed-rank, shapiro-wilk, anderson-darling, fisher, permutation, likelihood-ratio]
 
 For more information, try '--help'.
+
+=== benchmark: unknown metric 'NDCG' ===
++ target/release/clms verify 1 --method=benchmark --ref=x --metric=NDCG --metric-value=0.5 --threshold=0.3 --sample-size=100 --data-source=real --cmd=echo
+exit=2
+error: invalid value 'NDCG' for '--metric <METRIC>'
+  [possible values: auc-roc, auc-pr, f1, precision, recall, accuracy, balanced-accuracy, mcc, kappa-cohen, r2, log-loss, brier, rmse, mae, mape]
+
+For more information, try '--help'.
+
+=== benchmark: AUC 0.6 below threshold 0.8 (higher-better) ===
++ target/release/clms verify 1 --method=benchmark --ref=x --metric=auc-roc --metric-value=0.6 --threshold=0.8 --sample-size=1000 --data-source=real --cmd=echo
+exit=1
+Error: benchmark refused: metric_value=0.6 did not meet threshold=0.8 for metric 'auc-roc' (higher-better, need value >= threshold).
+state stays pending; either fix the eval, lower the threshold honestly, or write a different claim if the miss is the actual finding.
+
+=== benchmark: RMSE 0.9 above threshold 0.3 (lower-better) ===
++ target/release/clms verify 1 --method=benchmark --ref=x --metric=rmse --metric-value=0.9 --threshold=0.3 --sample-size=1000 --data-source=real --cmd=echo
+exit=1
+Error: benchmark refused: metric_value=0.9 did not meet threshold=0.3 for metric 'rmse' (lower-better, need value <= threshold).
+state stays pending; either fix the eval, lower the threshold honestly, or write a different claim if the miss is the actual finding.
+
+=== benchmark: metric_value NaN ===
++ target/release/clms verify 1 --method=benchmark --ref=x --metric=f1 --metric-value=NaN --threshold=0.5 --sample-size=100 --data-source=real --cmd=echo
+exit=1
+Error: benchmark --metric-value must be finite (got NaN). NaN/inf are not measurable values.
+
+=== benchmark: missing --threshold ===
++ target/release/clms verify 1 --method=benchmark --ref=x --metric=f1 --metric-value=0.8 --sample-size=100 --data-source=real --cmd=echo
+exit=1
+Error: benchmark requires --threshold <float>
+
+=== benchmark: --metric on prop-test ===
++ target/release/clms verify 1 --method=prop-test --ref=x --cmd=echo --exit-code=0 --metric=f1
+exit=1
+Error: --metric is only valid with --method benchmark (got --method prop-test)
 
 === prop-test missing --cmd ===
 + target/release/clms verify 1 --method=prop-test --exit-code=0 --ref=x
@@ -102,21 +137,21 @@ Error: invalid tier 'epirical'. valid: empirical | observed | documented | deriv
 === min_tier: refuse observed against empirical floor ===
 + target/release/clms verify 2 --method=observed --ref=TMPDIR/artifact.txt
 exit=1
-Error: claim #2 requires min_tier=empirical (got method 'observed' at tier observed). allowed methods: prop-test | integration-test | replay-test | stat-test.
+Error: claim #2 requires min_tier=empirical (got method 'observed' at tier observed). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark.
 
 this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
 
 === min_tier: refuse documented against empirical floor ===
 + target/release/clms verify 2 --method=documented --ref=https://docs.example.com --quote=the api returns 200
 exit=1
-Error: claim #2 requires min_tier=empirical (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test.
+Error: claim #2 requires min_tier=empirical (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark.
 
 this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
 
 === min_tier: refuse documented against observed floor ===
 + target/release/clms verify 3 --method=documented --ref=https://docs.example.com --quote=text
 exit=1
-Error: claim #3 requires min_tier=observed (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | observed.
+Error: claim #3 requires min_tier=observed (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark | observed.
 
 this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
 

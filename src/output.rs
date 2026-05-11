@@ -109,6 +109,14 @@ fn evidence_extras(e: &Evidence) -> String {
             e.exit_code.unwrap_or(-1),
             e.dataset.as_deref().unwrap_or("?")
         ),
+        EvidenceMethod::Benchmark => format!(
+            " [{}, value={}, threshold={}, n={}, src={}]",
+            e.metric.map(|m| m.as_str()).unwrap_or("?"),
+            e.metric_value.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.threshold.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.sample_size.map(|v| v.to_string()).unwrap_or("?".into()),
+            e.data_source.map(|d| d.as_str()).unwrap_or("?")
+        ),
         EvidenceMethod::Documented => {
             let q = e.quote.as_deref().unwrap_or("");
             let q = if q.len() > 60 { &q[..60] } else { q };
