@@ -1,5 +1,6 @@
 mod archaeology;
 mod cli;
+mod commands;
 mod error_handling;
 mod git;
 mod models;
@@ -8,6 +9,7 @@ mod schema;
 mod store;
 
 use crate::cli::{AddArgs, ArchaeologySub, Cli, Cmd, RefuteArgs, RerunArgs, VerifyArgs};
+use crate::commands::util::{commit_evidence, refuse_in_repair_mode};
 use crate::error_handling::{clap_err_extras, detect_early_format, emit_json_error, is_ai_format};
 use crate::schema::schema_value;
 
@@ -702,22 +704,6 @@ fn preflight_artifact_driven_inputs(ev: &Evidence) -> Result<()> {
     Ok(())
 }
 
-/// CLAIMS_REPAIR=1 disables claim-integrity verification in store::read_claim
-/// so a human can recover from a corrupted .claims/ tree (forensic
-/// forward-read). any *mutating* command run while repair is in effect would
-/// carry the tampered state forward; in the worst case (rerun) it would
-/// execute a tampered cmd field as shell. mutators bail at the top with this
-/// helper.
-fn refuse_in_repair_mode(op: &str) -> Result<()> {
-    if std::env::var("CLAIMS_REPAIR").is_ok() {
-        return Err(anyhow!(
-            "{}: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex or archaeology mutation.", 
-            op
-        ));
-    }
-    Ok(())
-}
-
 fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()> {
     refuse_in_repair_mode("verify")?;
     let seq = store.resolve(&a.id)?;
@@ -891,8 +877,7 @@ this one instead.",
     }
     claim.evidence.push(ev);
     claim.state = State::Verified;
-    claim.updated_at = Utc::now();
-    store.write_claim(&mut claim)?;
+    commit_evidence(&mut claim, store)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);
     Ok(())
 }
@@ -1016,7 +1001,6 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
         validate_evidence(&ev, store, seq)?;
     }
     claim.evidence.push(ev);
-    claim.updated_at = Utc::now();
 
     // contradiction-gate: if the rerun exit_code disagrees with what was
     // recorded at verify time, the claim's verified status is now suspect.
@@ -1031,14 +1015,14 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
         if matches!(claim.state, State::Verified | State::Pending) {
             claim.state = State::Suspect;
         }
-        store.write_claim(&mut claim)?;
+        commit_evidence(&mut claim, store)?;
         print!("{}", output::render_claim(&claim, store, fmt)?);
         return Err(anyhow!(
             "rerun contradicts prior evidence on claim #{}: stored exit_code={}, fresh exit_code={}.\nclaim flipped to suspect. write a new claim and refute this one if the contradiction is real, or investigate the rerun environment if it is spurious.",
             seq, prev, now,
         ));
     }
-    store.write_claim(&mut claim)?;
+    commit_evidence(&mut claim, store)?;
     print!("{}", output::render_claim(&claim, store, fmt)?);
     Ok(())
 }
@@ -1202,8 +1186,7 @@ fn cmd_refute(store: &mut Store, a: RefuteArgs, fmt: OutputFormat) -> Result<()>
         to_seq: a.by,
     });
     claim.evidence.push(refute_evidence(a.by, a.reason));
-    claim.updated_at = Utc::now();
-    store.write_claim(&mut claim)?;
+    commit_evidence(&mut claim, store)?;
 
     let mut out = output::render_claim(&claim, store, fmt)?;
     out.push_str(&render_cascade_note(store, seq, a.cascade)?);
