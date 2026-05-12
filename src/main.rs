@@ -1,5 +1,6 @@
 mod archaeology;
 mod cli;
+mod error_handling;
 mod git;
 mod models;
 mod output;
@@ -7,6 +8,7 @@ mod schema;
 mod store;
 
 use crate::cli::{AddArgs, ArchaeologySub, Cli, Cmd, RefuteArgs, RerunArgs, VerifyArgs};
+use crate::error_handling::{clap_err_extras, detect_early_format, emit_json_error, is_ai_format};
 use crate::schema::schema_value;
 
 use anyhow::{anyhow, Result};
@@ -25,71 +27,6 @@ use store::{
 };
 use ulid::Ulid;
 
-
-fn detect_early_format() -> Option<String> {
-    let args: Vec<String> = std::env::args().collect();
-    let mut i = 1;
-    while i < args.len() {
-        let a = &args[i];
-        if a == "--format" {
-            if let Some(next) = args.get(i + 1) {
-                return Some(next.clone());
-            }
-        }
-        if let Some(rest) = a.strip_prefix("--format=") {
-            return Some(rest.to_string());
-        }
-        i += 1;
-    }
-    std::env::var("CLAIMS_FORMAT").ok().filter(|s| !s.is_empty())
-}
-
-fn is_ai_format(s: &Option<String>) -> bool {
-    s.as_deref()
-        .map(|x| x.eq_ignore_ascii_case("ai"))
-        .unwrap_or(false)
-}
-
-fn emit_json_error(err: &str, kind: &str, code: i32, extras: serde_json::Value) {
-    let mut env = serde_json::json!({
-        "error": err,
-        "kind": kind,
-        "code": code,
-    });
-    if let serde_json::Value::Object(map) = extras {
-        if let serde_json::Value::Object(out) = &mut env {
-            for (k, v) in map {
-                out.insert(k, v);
-            }
-        }
-    }
-    eprintln!("{}", env);
-}
-
-fn clap_err_extras(e: &clap::Error) -> (String, serde_json::Value) {
-    use clap::error::ContextKind;
-    let mut field: Option<String> = None;
-    for (ck, cv) in e.context() {
-        if matches!(ck, ContextKind::InvalidArg) {
-            field = Some(cv.to_string());
-            break;
-        }
-    }
-    let kind_dbg = format!("{:?}", e.kind());
-    let msg = e
-        .to_string()
-        .lines()
-        .next()
-        .unwrap_or("clap parse error")
-        .trim_start_matches("error: ")
-        .to_string();
-    let mut extras = serde_json::Map::new();
-    extras.insert("clap_kind".into(), serde_json::Value::String(kind_dbg));
-    if let Some(f) = field {
-        extras.insert("field".into(), serde_json::Value::String(f));
-    }
-    (msg, serde_json::Value::Object(extras))
-}
 
 fn main() {
     let early_fmt = detect_early_format();
