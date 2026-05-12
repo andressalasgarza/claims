@@ -15,17 +15,13 @@ pub enum State {
     Suspect,
 }
 
-impl State {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            State::Pending => "pending",
-            State::Verified => "verified",
-            State::Refuted => "refuted",
-            State::Unverifiable => "unverifiable",
-            State::Suspect => "suspect",
-        }
-    }
-}
+enum_strings!(State, {
+    Pending => "pending",
+    Verified => "verified",
+    Refuted => "refuted",
+    Unverifiable => "unverifiable",
+    Suspect => "suspect",
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -36,32 +32,17 @@ pub enum ConfidenceTier {
     Empirical = 4,
 }
 
+// note: ConfidenceTier::parse accepts kebab-case as written by agents on
+// `clms add --min-tier <name>`. unknown names produce a hard error listing
+// the valid set so an LLM cannot bluff its way through.
+enum_strings!(ConfidenceTier, err: "invalid tier '{}'. valid: {}", {
+    Empirical => "empirical",
+    Observed => "observed",
+    Documented => "documented",
+    Derived => "derived",
+});
+
 impl ConfidenceTier {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ConfidenceTier::Empirical => "empirical",
-            ConfidenceTier::Observed => "observed",
-            ConfidenceTier::Documented => "documented",
-            ConfidenceTier::Derived => "derived",
-        }
-    }
-
-    /// parse a user-facing tier name. accepts kebab-case as written by agents
-    /// on `clms add --min-tier <name>`. unknown names produce a hard error
-    /// listing the valid set so an LLM cannot bluff its way through.
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
-        match s {
-            "empirical" => Ok(ConfidenceTier::Empirical),
-            "observed" => Ok(ConfidenceTier::Observed),
-            "documented" => Ok(ConfidenceTier::Documented),
-            "derived" => Ok(ConfidenceTier::Derived),
-            other => Err(anyhow::anyhow!(
-                "invalid tier '{}'. valid: empirical | observed | documented | derived",
-                other
-            )),
-        }
-    }
-
     /// true if `self` is at least as strong as `floor`. encapsulates the
     /// ordering direction (Empirical=4 strongest, Derived=1 weakest) so the
     /// comparison cannot silently flip if the discriminants are ever renumbered.
@@ -122,27 +103,25 @@ pub enum BenchmarkMetric {
     LogLoss, Brier, Rmse, Mae, Mape,
 }
 
-impl BenchmarkMetric {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            BenchmarkMetric::AucRoc => "auc-roc",
-            BenchmarkMetric::AucPr => "auc-pr",
-            BenchmarkMetric::F1 => "f1",
-            BenchmarkMetric::Precision => "precision",
-            BenchmarkMetric::Recall => "recall",
-            BenchmarkMetric::Accuracy => "accuracy",
-            BenchmarkMetric::BalancedAccuracy => "balanced-accuracy",
-            BenchmarkMetric::Mcc => "mcc",
-            BenchmarkMetric::KappaCohen => "kappa-cohen",
-            BenchmarkMetric::R2 => "r2",
-            BenchmarkMetric::LogLoss => "log-loss",
-            BenchmarkMetric::Brier => "brier",
-            BenchmarkMetric::Rmse => "rmse",
-            BenchmarkMetric::Mae => "mae",
-            BenchmarkMetric::Mape => "mape",
-        }
-    }
+enum_strings!(BenchmarkMetric, err: "invalid benchmark metric '{}' in artifact. valid: {}", {
+    AucRoc => "auc-roc",
+    AucPr => "auc-pr",
+    F1 => "f1",
+    Precision => "precision",
+    Recall => "recall",
+    Accuracy => "accuracy",
+    BalancedAccuracy => "balanced-accuracy",
+    Mcc => "mcc",
+    KappaCohen => "kappa-cohen",
+    R2 => "r2",
+    LogLoss => "log-loss",
+    Brier => "brier",
+    Rmse => "rmse",
+    Mae => "mae",
+    Mape => "mape",
+});
 
+impl BenchmarkMetric {
     /// true if higher metric_value is better (AUC, F1, accuracy, R² family).
     /// false if lower is better (loss / error metrics).
     pub fn is_higher_better(&self) -> bool {
@@ -162,39 +141,6 @@ impl BenchmarkMetric {
             | BenchmarkMetric::Rmse
             | BenchmarkMetric::Mae
             | BenchmarkMetric::Mape => false,
-        }
-    }
-
-    pub fn all_names() -> &'static [&'static str] {
-        &[
-            "auc-roc", "auc-pr", "f1", "precision", "recall", "accuracy",
-            "balanced-accuracy", "mcc", "kappa-cohen", "r2",
-            "log-loss", "brier", "rmse", "mae", "mape",
-        ]
-    }
-
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
-        match s {
-            "auc-roc" => Ok(Self::AucRoc),
-            "auc-pr" => Ok(Self::AucPr),
-            "f1" => Ok(Self::F1),
-            "precision" => Ok(Self::Precision),
-            "recall" => Ok(Self::Recall),
-            "accuracy" => Ok(Self::Accuracy),
-            "balanced-accuracy" => Ok(Self::BalancedAccuracy),
-            "mcc" => Ok(Self::Mcc),
-            "kappa-cohen" => Ok(Self::KappaCohen),
-            "r2" => Ok(Self::R2),
-            "log-loss" => Ok(Self::LogLoss),
-            "brier" => Ok(Self::Brier),
-            "rmse" => Ok(Self::Rmse),
-            "mae" => Ok(Self::Mae),
-            "mape" => Ok(Self::Mape),
-            other => Err(anyhow::anyhow!(
-                "invalid benchmark metric '{}' in artifact. valid: {}",
-                other,
-                Self::all_names().join(" | ")
-            )),
         }
     }
 }
@@ -225,58 +171,21 @@ pub enum Estimator {
     SpearmanRho,
 }
 
-impl Estimator {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Estimator::Mean => "mean",
-            Estimator::Median => "median",
-            Estimator::GeometricMean => "geometric-mean",
-            Estimator::StdDev => "std-dev",
-            Estimator::StdError => "std-error",
-            Estimator::Variance => "variance",
-            Estimator::Skewness => "skewness",
-            Estimator::Kurtosis => "kurtosis",
-            Estimator::CohensD => "cohens-d",
-            Estimator::OddsRatio => "odds-ratio",
-            Estimator::RiskRatio => "risk-ratio",
-            Estimator::Correlation => "correlation",
-            Estimator::SpearmanRho => "spearman-rho",
-        }
-    }
-
-    pub fn all_names() -> &'static [&'static str] {
-        &[
-            "mean", "median", "geometric-mean",
-            "std-dev", "std-error", "variance",
-            "skewness", "kurtosis",
-            "cohens-d", "odds-ratio", "risk-ratio",
-            "correlation", "spearman-rho",
-        ]
-    }
-
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
-        match s {
-            "mean" => Ok(Self::Mean),
-            "median" => Ok(Self::Median),
-            "geometric-mean" => Ok(Self::GeometricMean),
-            "std-dev" => Ok(Self::StdDev),
-            "std-error" => Ok(Self::StdError),
-            "variance" => Ok(Self::Variance),
-            "skewness" => Ok(Self::Skewness),
-            "kurtosis" => Ok(Self::Kurtosis),
-            "cohens-d" => Ok(Self::CohensD),
-            "odds-ratio" => Ok(Self::OddsRatio),
-            "risk-ratio" => Ok(Self::RiskRatio),
-            "correlation" => Ok(Self::Correlation),
-            "spearman-rho" => Ok(Self::SpearmanRho),
-            other => Err(anyhow::anyhow!(
-                "invalid estimator '{}' in artifact. valid: {}",
-                other,
-                Self::all_names().join(" | ")
-            )),
-        }
-    }
-}
+enum_strings!(Estimator, err: "invalid estimator '{}' in artifact. valid: {}", {
+    Mean => "mean",
+    Median => "median",
+    GeometricMean => "geometric-mean",
+    StdDev => "std-dev",
+    StdError => "std-error",
+    Variance => "variance",
+    Skewness => "skewness",
+    Kurtosis => "kurtosis",
+    CohensD => "cohens-d",
+    OddsRatio => "odds-ratio",
+    RiskRatio => "risk-ratio",
+    Correlation => "correlation",
+    SpearmanRho => "spearman-rho",
+});
 
 /// for `stat-test`. simulated data is refused; the data must come from a source
 /// the author does not control (real captured samples or live measurement).
@@ -289,14 +198,15 @@ pub enum DataSource {
     Live,
 }
 
-impl DataSource {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            DataSource::Real => "real",
-            DataSource::Live => "live",
-        }
-    }
+// DataSource has a bespoke parse (rejects 'simulated'/'sim'/'synthetic' with
+// a specific falsifiability-pedagogy message and uses 'real|live' without
+// spaces around the pipe in the catch-all error), so only as_str is generated.
+enum_strings!(DataSource, {
+    Real => "real",
+    Live => "live",
+});
 
+impl DataSource {
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s {
             "real" => Ok(Self::Real),
@@ -359,74 +269,25 @@ pub enum HypothesisTest {
     LikelihoodRatio,
 }
 
-impl HypothesisTest {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            HypothesisTest::ChiSquared => "chi-squared",
-            HypothesisTest::ChiSquaredGoodnessOfFit => "chi-squared-goodness-of-fit",
-            HypothesisTest::TTestPaired => "t-test-paired",
-            HypothesisTest::TTestUnpaired => "t-test-unpaired",
-            HypothesisTest::TTestOneSample => "t-test-one-sample",
-            HypothesisTest::WelchT => "welch-t",
-            HypothesisTest::Anova => "anova",
-            HypothesisTest::KolmogorovSmirnov => "kolmogorov-smirnov",
-            HypothesisTest::MannWhitneyU => "mann-whitney-u",
-            HypothesisTest::WilcoxonSignedRank => "wilcoxon-signed-rank",
-            HypothesisTest::ShapiroWilk => "shapiro-wilk",
-            HypothesisTest::AndersonDarling => "anderson-darling",
-            HypothesisTest::Fisher => "fisher",
-            HypothesisTest::Permutation => "permutation",
-            HypothesisTest::LikelihoodRatio => "likelihood-ratio",
-        }
-    }
-
-    /// every known canonical name. used by the `clms schema` dump and the
-    /// error path when an unknown string sneaks in via a legacy claim file.
-    pub fn all_names() -> &'static [&'static str] {
-        &[
-            "chi-squared",
-            "chi-squared-goodness-of-fit",
-            "t-test-paired",
-            "t-test-unpaired",
-            "t-test-one-sample",
-            "welch-t",
-            "anova",
-            "kolmogorov-smirnov",
-            "mann-whitney-u",
-            "wilcoxon-signed-rank",
-            "shapiro-wilk",
-            "anderson-darling",
-            "fisher",
-            "permutation",
-            "likelihood-ratio",
-        ]
-    }
-
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
-        match s {
-            "chi-squared" => Ok(Self::ChiSquared),
-            "chi-squared-goodness-of-fit" => Ok(Self::ChiSquaredGoodnessOfFit),
-            "t-test-paired" => Ok(Self::TTestPaired),
-            "t-test-unpaired" => Ok(Self::TTestUnpaired),
-            "t-test-one-sample" => Ok(Self::TTestOneSample),
-            "welch-t" => Ok(Self::WelchT),
-            "anova" => Ok(Self::Anova),
-            "kolmogorov-smirnov" => Ok(Self::KolmogorovSmirnov),
-            "mann-whitney-u" => Ok(Self::MannWhitneyU),
-            "wilcoxon-signed-rank" => Ok(Self::WilcoxonSignedRank),
-            "shapiro-wilk" => Ok(Self::ShapiroWilk),
-            "anderson-darling" => Ok(Self::AndersonDarling),
-            "fisher" => Ok(Self::Fisher),
-            "permutation" => Ok(Self::Permutation),
-            "likelihood-ratio" => Ok(Self::LikelihoodRatio),
-            other => Err(anyhow::anyhow!(
-                "invalid hypothesis test '{}' in artifact. valid: {}",
-                other,
-                Self::all_names().join(" | ")
-            )),
-        }
-    }
-}
+// HypothesisTest::all_names is used by the `clms schema` dump and the error
+// path when an unknown string sneaks in via a legacy claim file.
+enum_strings!(HypothesisTest, err: "invalid hypothesis test '{}' in artifact. valid: {}", {
+    ChiSquared => "chi-squared",
+    ChiSquaredGoodnessOfFit => "chi-squared-goodness-of-fit",
+    TTestPaired => "t-test-paired",
+    TTestUnpaired => "t-test-unpaired",
+    TTestOneSample => "t-test-one-sample",
+    WelchT => "welch-t",
+    Anova => "anova",
+    KolmogorovSmirnov => "kolmogorov-smirnov",
+    MannWhitneyU => "mann-whitney-u",
+    WilcoxonSignedRank => "wilcoxon-signed-rank",
+    ShapiroWilk => "shapiro-wilk",
+    AndersonDarling => "anderson-darling",
+    Fisher => "fisher",
+    Permutation => "permutation",
+    LikelihoodRatio => "likelihood-ratio",
+});
 
 /// canonical descriptor for an evidence method. **single source of truth.**
 ///
@@ -689,17 +550,15 @@ pub enum EdgeType {
     Refutes,
 }
 
-impl EdgeType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            EdgeType::DependsOn => "depends_on",
-            EdgeType::Tests => "tests",
-            EdgeType::Supports => "supports",
-            EdgeType::Refines => "refines",
-            EdgeType::Refutes => "refutes",
-        }
-    }
-}
+// EdgeType uses snake_case (depends_on) not kebab-case; the macro doesn't
+// enforce a naming scheme since each variant has its name written explicitly.
+enum_strings!(EdgeType, {
+    DependsOn => "depends_on",
+    Tests => "tests",
+    Supports => "supports",
+    Refines => "refines",
+    Refutes => "refutes",
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {

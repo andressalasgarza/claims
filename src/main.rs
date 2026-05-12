@@ -1,3 +1,6 @@
+#[macro_use]
+mod macros;
+
 mod archaeology;
 mod cli;
 mod commands;
