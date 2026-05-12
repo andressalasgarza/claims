@@ -13,7 +13,7 @@ pub(crate) mod build;
 use anyhow::{anyhow, Result};
 
 use crate::cli::VerifyArgs;
-use crate::commands::util::{commit_evidence, refuse_in_repair_mode};
+use crate::commands::util::{assert_not_refuted_verify, commit_evidence, refuse_in_repair_mode};
 use crate::commands::verify::artifact::{
     assert_artifact_cmd_zero, populate_empirical_artifact_fields, preflight_artifact_driven_inputs,
 };
@@ -185,32 +185,51 @@ fn verify_check_min_tier(claim: &Claim, ev: &Evidence, seq: u64) -> Result<()> {
     ))
 }
 
+/// dispatch the method-specific cmd execution. artifact-driven methods
+/// also populate empirical fields from the json at --ref; runnable methods
+/// just reconcile exit_code + check loopback. extracted so cmd_verify
+/// pays one decision for the whole exec phase.
+fn verify_execute_for_method(
+    ev: &mut Evidence, store: &Store, seq: u64, allow_local: bool,
+) -> Result<()> {
+    match ev.method {
+        EvidenceMethod::StatTest | EvidenceMethod::Benchmark | EvidenceMethod::Estimate => {
+            verify_run_artifact_method(ev, store, seq)
+        }
+        _ => verify_run_runnable_method(ev, store, seq, allow_local),
+    }
+}
+
+/// run all three semantic gates (drift / dedup / min-tier) as a single
+/// caller decision. each gate is independently testable but cmd_verify
+/// doesn't care which one fires.
+fn verify_run_gates(claim: &Claim, ev: &Evidence, ack_drift: bool, seq: u64) -> Result<()> {
+    verify_check_drifts(claim, ev, ack_drift, seq)?;
+    verify_check_dedup(claim, ev, seq)?;
+    verify_check_min_tier(claim, ev, seq)?;
+    Ok(())
+}
+
+/// flip state to Verified, append the evidence, commit, render. the order
+/// matters: state must flip before write_claim recomputes content_hash.
+fn commit_verified_evidence(
+    claim: &mut Claim, store: &mut Store, ev: Evidence, fmt: OutputFormat,
+) -> Result<()> {
+    claim.evidence.push(ev);
+    claim.state = State::Verified;
+    commit_evidence(claim, store)?;
+    print!("{}", output::render_claim(claim, store, fmt)?);
+    Ok(())
+}
+
 pub(crate) fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()> {
     refuse_in_repair_mode("verify")?;
     let seq = store.resolve(&a.id)?;
     let mut claim = store.read_claim(seq)?;
-    if claim.state == State::Refuted {
-        return Err(anyhow!(
-            "claim #{} is refuted; write a new claim instead of re-verifying",
-            seq
-        ));
-    }
+    assert_not_refuted_verify(&claim, seq)?;
     let m = EvidenceMethod::parse(&a.method)?;
     let mut ev = build_evidence(&a, m)?;
-    match m {
-        EvidenceMethod::StatTest | EvidenceMethod::Benchmark | EvidenceMethod::Estimate => {
-            verify_run_artifact_method(&mut ev, store, seq)?;
-        }
-        _ => {
-            verify_run_runnable_method(&mut ev, store, seq, a.allow_local)?;
-        }
-    }
-    verify_check_drifts(&claim, &ev, a.acknowledge_drift, seq)?;
-    verify_check_dedup(&claim, &ev, seq)?;
-    verify_check_min_tier(&claim, &ev, seq)?;
-    claim.evidence.push(ev);
-    claim.state = State::Verified;
-    commit_evidence(&mut claim, store)?;
-    print!("{}", output::render_claim(&claim, store, fmt)?);
-    Ok(())
+    verify_execute_for_method(&mut ev, store, seq, a.allow_local)?;
+    verify_run_gates(&claim, &ev, a.acknowledge_drift, seq)?;
+    commit_verified_evidence(&mut claim, store, ev, fmt)
 }

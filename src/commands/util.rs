@@ -20,6 +20,18 @@ pub(crate) fn assert_not_refuted_rerun(claim: &Claim, seq: u64) -> Result<()> {
     ))
 }
 
+/// shared refused-claim gate for verify: re-verifying a refuted claim is a
+/// silent contradiction; write a new claim instead.
+pub(crate) fn assert_not_refuted_verify(claim: &Claim, seq: u64) -> Result<()> {
+    if claim.state != State::Refuted {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "claim #{} is refuted; write a new claim instead of re-verifying",
+        seq
+    ))
+}
+
 /// CLAIMS_REPAIR=1 disables claim-integrity verification in store::read_claim
 /// so a human can recover from a corrupted .claims/ tree (forensic
 /// forward-read). any *mutating* command run while repair is in effect would
