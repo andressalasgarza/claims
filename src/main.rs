@@ -13,11 +13,11 @@ use crate::commands::add::cmd_add;
 use crate::commands::diff::cmd_diff_evidence;
 use crate::commands::help_all::cmd_help_all;
 use crate::commands::refute::cmd_refute;
+use crate::commands::schema_cli::cmd_schema;
 use crate::commands::show::cmd_show;
 use crate::commands::suspect::cmd_suspect;
 use crate::commands::util::{commit_evidence, refuse_in_repair_mode};
 use crate::error_handling::{clap_err_extras, detect_early_format, emit_json_error, is_ai_format};
-use crate::schema::schema_value;
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -139,50 +139,6 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-
-fn cmd_schema(target: Option<String>, fmt: OutputFormat) -> Result<()> {
-    if let Some(t) = target.as_deref() {
-        match t {
-            "methods" => {
-                println!("{}", serde_json::to_string_pretty(&schema::methods_table())?);
-                return Ok(());
-            }
-            other => {
-                return Err(anyhow!(
-                    "unknown schema target '{}'. valid: methods",
-                    other
-                ));
-            }
-        }
-    }
-    if matches!(fmt, OutputFormat::Ai) {
-        println!("{}", serde_json::to_string(&schema_value())?);
-        return Ok(());
-    }
-    let s = schema_value();
-    println!("clms schema v{}", s["version"].as_str().unwrap_or("?"));
-    println!();
-    println!("states:           {}", s["states"]);
-    println!("confidence tiers: derived < documented < observed < empirical");
-    println!("edge types:       {}", s["edge_types"]);
-    println!("output formats:   {}", s["output_formats"]);
-    println!();
-    println!("evidence method requirements:");
-    if let Some(map) = s["evidence_methods"].as_object() {
-        for (name, spec) in map {
-            let req = spec["required"].to_string();
-            let conf = spec["confidence"].as_str().unwrap_or("?");
-            println!("  {:<11} required={} → {}", name, req, conf);
-        }
-    }
-    println!();
-    if let Some(map) = s["env_vars"].as_object() {
-        let names: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
-        println!("env vars: {}", names.join(", "));
-    }
-    println!("under --format ai: errors emit json envelope on stderr (run `clms --format ai schema` for full spec)");
-    Ok(())
-}
 
 // embedded at compile time so `cargo install` / homebrew binaries ship the
 // agents without needing a source tree. updates require a rebuild.
