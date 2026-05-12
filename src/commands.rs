@@ -10,3 +10,4 @@ pub(crate) mod schema_cli;
 pub(crate) mod show;
 pub(crate) mod suspect;
 pub(crate) mod util;
+pub(crate) mod verify;
