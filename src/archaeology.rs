@@ -813,35 +813,49 @@ fn claim_mut(c: Claim) -> Claim {
 
 // ---------- purge ----------
 
-fn cmd_purge(store: &mut Store, args: PurgeArgs, fmt: OutputFormat) -> Result<()> {
-    let target_agent = args.agent.unwrap_or_else(|| AGENT.to_string());
-    let target_session = args.session;
-
-    let mut victims: Vec<u64> = Vec::new();
+/// scan all claims and return seqs matching (agent, session). claims that
+/// fail to read are silently skipped — purge is a forensic operation that
+/// must tolerate partially corrupt ledgers.
+fn collect_purge_victims(store: &Store, target_agent: &str, target_session: &str) -> Result<Vec<u64>> {
+    let mut victims = Vec::new();
     for seq in store.all_seqs()? {
         let claim = match store.read_claim(seq) {
             Ok(c) => c,
             Err(_) => continue,
         };
-        let agent_match = claim.agent.as_deref() == Some(target_agent.as_str());
-        let session_match = claim.session.as_deref() == Some(target_session.as_str());
+        let agent_match = claim.agent.as_deref() == Some(target_agent);
+        let session_match = claim.session.as_deref() == Some(target_session);
         if agent_match && session_match {
             victims.push(seq);
         }
     }
+    Ok(victims)
+}
 
+/// delete the .claims/NNNNNN.json files for the given victims. silently
+/// tolerates already-missing files (the seq came from all_seqs() but the
+/// file vanished mid-purge, e.g. concurrent process). returns the number
+/// actually removed.
+fn delete_claim_files(victims: &[u64]) -> Result<usize> {
     let mut removed = 0usize;
-    for seq in &victims {
+    for seq in victims {
         let path = PathBuf::from(".claims").join(format!("{:06}.json", seq));
-        if path.exists() {
-            fs::remove_file(&path)
-                .with_context(|| format!("remove {}", path.display()))?;
-            removed += 1;
+        if !path.exists() {
+            continue;
         }
+        fs::remove_file(&path)
+            .with_context(|| format!("remove {}", path.display()))?;
+        removed += 1;
     }
+    Ok(removed)
+}
 
-    let reindexed = store.reindex_all()?;
-
+/// render the purge result in either AI/json or human format. extracted to
+/// keep cmd_purge a flat sequence of phase calls.
+fn render_purge_result(
+    fmt: OutputFormat, target_agent: &str, target_session: &str,
+    victims: &[u64], removed: usize, reindexed: usize,
+) {
     if matches!(fmt, OutputFormat::Ai) {
         println!(
             "{}",
@@ -853,18 +867,29 @@ fn cmd_purge(store: &mut Store, args: PurgeArgs, fmt: OutputFormat) -> Result<()
                 "reindexed_total": reindexed,
             })
         );
-    } else if victims.is_empty() {
+        return;
+    }
+    if victims.is_empty() {
         println!(
             "no claims matched agent={} session={}",
             target_agent, target_session
         );
-    } else {
-        println!(
-            "purged {} claims (seqs: {:?}) for agent={} session={}",
-            removed, victims, target_agent, target_session
-        );
-        println!("reindexed {} remaining claims", reindexed);
+        return;
     }
+    println!(
+        "purged {} claims (seqs: {:?}) for agent={} session={}",
+        removed, victims, target_agent, target_session
+    );
+    println!("reindexed {} remaining claims", reindexed);
+}
+
+fn cmd_purge(store: &mut Store, args: PurgeArgs, fmt: OutputFormat) -> Result<()> {
+    let target_agent = args.agent.unwrap_or_else(|| AGENT.to_string());
+    let target_session = args.session;
+    let victims = collect_purge_victims(store, &target_agent, &target_session)?;
+    let removed = delete_claim_files(&victims)?;
+    let reindexed = store.reindex_all()?;
+    render_purge_result(fmt, &target_agent, &target_session, &victims, removed, reindexed);
     Ok(())
 }
 
