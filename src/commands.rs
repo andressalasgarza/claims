@@ -2,6 +2,7 @@
 //! `main::run` dispatches to. shared helpers live in `util`.
 
 pub(crate) mod add;
+pub(crate) mod diff;
 pub(crate) mod help_all;
 pub(crate) mod show;
 pub(crate) mod suspect;
