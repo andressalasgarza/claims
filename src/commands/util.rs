@@ -5,8 +5,20 @@
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 
-use crate::models::Claim;
+use crate::models::{Claim, State};
 use crate::store::Store;
+
+/// shared refused-claim gate for rerun: cmd_rerun must refuse to operate on
+/// a refuted claim because re-collecting evidence cannot un-refute it.
+pub(crate) fn assert_not_refuted_rerun(claim: &Claim, seq: u64) -> Result<()> {
+    if claim.state != State::Refuted {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "claim #{} is refuted; rerun is not meaningful. write a new claim.",
+        seq
+    ))
+}
 
 /// CLAIMS_REPAIR=1 disables claim-integrity verification in store::read_claim
 /// so a human can recover from a corrupted .claims/ tree (forensic
