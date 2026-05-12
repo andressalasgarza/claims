@@ -9,6 +9,9 @@ mod schema;
 mod store;
 
 use crate::cli::{AddArgs, ArchaeologySub, Cli, Cmd, RefuteArgs, RerunArgs, VerifyArgs};
+use crate::commands::help_all::cmd_help_all;
+use crate::commands::show::cmd_show;
+use crate::commands::suspect::cmd_suspect;
 use crate::commands::util::{commit_evidence, refuse_in_repair_mode};
 use crate::error_handling::{clap_err_extras, detect_early_format, emit_json_error, is_ai_format};
 use crate::schema::schema_value;
@@ -278,27 +281,6 @@ fn emit_install_report(
     if !dry_run && !report.written.is_empty() {
         println!();
         println!("verify with: subagent({{ action: \"list\" }})  // expect clms.judge + clms.proposer");
-    }
-    Ok(())
-}
-
-fn cmd_help_all() -> Result<()> {
-    use clap::CommandFactory;
-    let mut top = Cli::command();
-    println!("# top-level\n");
-    top.print_long_help().ok();
-    println!("\n");
-    let names: Vec<String> = top
-        .get_subcommands()
-        .map(|s| s.get_name().to_string())
-        .filter(|n| n != "help-all" && n != "help")
-        .collect();
-    for name in names {
-        if let Some(sub) = top.find_subcommand_mut(&name) {
-            println!("\n# {}\n", name);
-            sub.print_long_help().ok();
-            println!("\n");
-        }
     }
     Ok(())
 }
@@ -1194,44 +1176,4 @@ fn cmd_refute(store: &mut Store, a: RefuteArgs, fmt: OutputFormat) -> Result<()>
     Ok(())
 }
 
-fn cmd_show(store: &Store, id: String, fmt: OutputFormat) -> Result<()> {
-    let seq = store.resolve(&id)?;
-    let c = store.read_claim(seq)?;
-    print!("{}", output::render_claim(&c, store, fmt)?);
-    Ok(())
-}
 
-fn cmd_suspect(store: &Store, fmt: OutputFormat, exclude_agent: &[String]) -> Result<()> {
-    let seqs = store.all_seqs()?;
-    let claims: Vec<Claim> = seqs
-        .iter()
-        .map(|s| store.read_claim(*s))
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .filter(|c| c.state == State::Suspect)
-        .filter(|c| !output::agent_excluded(c, exclude_agent))
-        .collect();
-    if matches!(fmt, OutputFormat::Ai) {
-        let arr: Vec<_> = claims
-            .iter()
-            .map(|c| {
-                serde_json::json!({
-                    "seq": c.seq,
-                    "text": c.text,
-                    "tags": c.tags,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string(&arr)?);
-        return Ok(());
-    }
-    if claims.is_empty() {
-        println!("no suspect claims.");
-        return Ok(());
-    }
-    println!("suspect claims ({}):", claims.len());
-    for c in claims {
-        println!("  #{} {}", c.seq, c.text);
-    }
-    Ok(())
-}
