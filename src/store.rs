@@ -269,6 +269,17 @@ impl Store {
         Ok(rows.filter_map(|r| r.ok()).map(|n| n as u64).collect())
     }
 
+    /// load every claim in the ledger in seq order. wraps the
+    /// `all_seqs() -> map(read_claim) -> collect::<Result<Vec<_>>>()`
+    /// pattern that was duplicated across output.rs, commands/suspect.rs,
+    /// and elsewhere. one fail-fast `?` for any read error.
+    pub fn all_claims(&self) -> Result<Vec<Claim>> {
+        self.all_seqs()?
+            .into_iter()
+            .map(|s| self.read_claim(s))
+            .collect()
+    }
+
     pub fn dependents_of(&self, seq: u64) -> Result<Vec<(u64, String)>> {
         let mut s = self
             .conn

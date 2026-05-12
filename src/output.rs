@@ -279,11 +279,8 @@ pub(crate) fn agent_excluded(c: &Claim, exclude: &[String]) -> bool {
 }
 
 fn timeline_load(store: &Store, tag: Option<&str>, exclude_agent: &[String]) -> Result<Vec<Claim>> {
-    let seqs = store.all_seqs()?;
-    let mut claims: Vec<Claim> = seqs
-        .iter()
-        .map(|s| store.read_claim(*s))
-        .collect::<Result<Vec<_>>>()?
+    let mut claims: Vec<Claim> = store
+        .all_claims()?
         .into_iter()
         .filter(|c| match tag {
             Some(t) => c.tags.iter().any(|x| x == t),
@@ -355,11 +352,8 @@ pub fn render_context(
     fmt: OutputFormat,
     exclude_agent: &[String],
 ) -> Result<String> {
-    let seqs = store.all_seqs()?;
-    let claims: Vec<Claim> = seqs
-        .iter()
-        .map(|s| store.read_claim(*s))
-        .collect::<Result<Vec<_>>>()?
+    let claims: Vec<Claim> = store
+        .all_claims()?
         .into_iter()
         .filter(|c| matches!(c.state, State::Verified))
         .filter(|c| match tag {
@@ -499,6 +493,17 @@ fn collect_stats(
     })
 }
 
+/// lookup a tier count from the `by_tier` snapshot. extracted because both
+/// render_stats_human and render_stats_ai need the (empirical, observed)
+/// pair and the lookup-or-zero pattern was copy-pasted ~7 lines each.
+fn tier_count(s: &StatsSnapshot, tier: &str) -> usize {
+    s.by_tier
+        .iter()
+        .find(|(n, _)| *n == tier)
+        .map(|(_, c)| *c)
+        .unwrap_or(0)
+}
+
 fn pct(num: usize, denom: usize) -> f64 {
     if denom == 0 {
         0.0
@@ -565,18 +570,8 @@ fn render_stats_human(s: &StatsSnapshot) -> Result<String> {
     }
 
     // observed/empirical ratio: the shopping-down signal.
-    let empirical = s
-        .by_tier
-        .iter()
-        .find(|(n, _)| *n == "empirical")
-        .map(|(_, c)| *c)
-        .unwrap_or(0);
-    let observed = s
-        .by_tier
-        .iter()
-        .find(|(n, _)| *n == "observed")
-        .map(|(_, c)| *c)
-        .unwrap_or(0);
+    let empirical = tier_count(s, "empirical");
+    let observed = tier_count(s, "observed");
     out.push_str("\nratios:\n");
     if empirical == 0 {
         out.push_str(&format!(
@@ -629,18 +624,8 @@ fn render_stats_ai(s: &StatsSnapshot) -> Result<String> {
         })
         .collect();
 
-    let empirical = s
-        .by_tier
-        .iter()
-        .find(|(n, _)| *n == "empirical")
-        .map(|(_, c)| *c)
-        .unwrap_or(0);
-    let observed = s
-        .by_tier
-        .iter()
-        .find(|(n, _)| *n == "observed")
-        .map(|(_, c)| *c)
-        .unwrap_or(0);
+    let empirical = tier_count(s, "empirical");
+    let observed = tier_count(s, "observed");
     let ratio = if empirical == 0 {
         serde_json::Value::Null
     } else {

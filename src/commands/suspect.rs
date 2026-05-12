@@ -5,11 +5,8 @@ use crate::output::{self, OutputFormat};
 use crate::store::Store;
 
 pub(crate) fn cmd_suspect(store: &Store, fmt: OutputFormat, exclude_agent: &[String]) -> Result<()> {
-    let seqs = store.all_seqs()?;
-    let claims: Vec<Claim> = seqs
-        .iter()
-        .map(|s| store.read_claim(*s))
-        .collect::<Result<Vec<_>>>()?
+    let claims: Vec<Claim> = store
+        .all_claims()?
         .into_iter()
         .filter(|c| c.state == State::Suspect)
         .filter(|c| !output::agent_excluded(c, exclude_agent))
