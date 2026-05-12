@@ -152,7 +152,7 @@ the cut rationale.
 - **suggested_evidence.method == unit-test | code-test | sim-test** → these
   methods are refused at parse time by `clms verify`. survivors will fail
   promotion. either drop, or note in your rationale that the surviving
-  evidence method must be one of the falsifiable nine in schema 1.2
+  evidence method must be one of the falsifiable nine in schema 1.3
   (prop-test, integration-test, replay-test, stat-test, benchmark,
   estimate, observed, documented, derived).
 
@@ -180,27 +180,30 @@ constraint in your `rationale` so the human knows the bar.
   prop-test, integration-test, replay-test, stat-test, benchmark,
   estimate) → clms now *executes* the cmd at verify time. cmds that read
   from a developer's laptop, a personal API key, or a non-checked-in
-  fixture will fail in CI. drop candidates whose only suggested cmd is
-  non-reproducible.
+  fixture will fail in CI. for stat-test / benchmark / estimate, the cmd
+  must also produce a LOCAL JSON artifact at `--ref`; proposals that only
+  name a source file or a URL there are structurally wrong. drop
+  candidates whose only suggested cmd is non-reproducible.
 - **replay-test against synthetic data** → the binary will hash whatever
   bytes you point at, but the convention is that --dataset must be a
   real-world capture. drop candidates whose proposed dataset is
   `/dev/urandom` output or known-synthetic fixtures.
-- **stat-test with claimed p-value outside [0, 1] or sample_size < 2** →
-  refused at parse. drop candidates that would require fabricated stats.
-- **stat-test --test-type is a closed enum (schema 1.2)** — only the
+- **stat-test artifact malformed** (p-value outside [0, 1], sample_size <
+  2, non-local `--ref`, or no JSON artifact produced by `--cmd`) →
+  refused. drop candidates that would require fabricated stats.
+- **stat-test --test-type is a closed enum (schema 1.3)** — only the
   named hypothesis tests are accepted (chi-squared, t-test family, ks,
   mann-whitney-u, etc.). agents that suggest `--test-type AUC` or
-  `--test-type my-test` get refused at clap parse time. for AUC / F1 /
-  precision / recall / RMSE etc., the correct method is **benchmark**,
-  not stat-test (no p-value involved).
-- **benchmark with metric below threshold (higher-better) or above
-  (lower-better)** → refused. clms enforces direction per metric. drop
-  candidates that would require a known-failing eval.
-- **estimate with point outside CI, ci_lower > ci_upper, or
-  confidence_level not in (0, 1)** → refused. the CI shape must be
-  self-consistent. drop candidates whose only path to verification is a
-  malformed CI.
+  `--test-type my-test` get refused at parse time or artifact-parse time.
+  for AUC / F1 / precision / recall / RMSE etc., the correct method is
+  **benchmark**, not stat-test (no p-value involved).
+- **benchmark artifact malformed or below threshold** → refused. `--ref`
+  must be a local JSON artifact from `--cmd`; metric direction is enforced
+  per metric. drop candidates that would require a known-failing eval.
+- **estimate artifact malformed** (non-local `--ref`, point outside CI,
+  ci_lower > ci_upper, or confidence_level not in (0, 1)) → refused. the
+  CI shape must be self-consistent. drop candidates whose only path to
+  verification is a malformed CI.
 - **min_tier mismatch** → if the target claim was created with
   `--min-tier <tier>`, only methods at or above that tier verify. a
   candidate stamped `min_tier=empirical` cannot be promoted using

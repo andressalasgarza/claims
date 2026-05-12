@@ -10,9 +10,10 @@ NOTES
     estimate) and has a stored cmd. re-hashes the cmd and refuses if it
     has been tampered
     since verify time (cmd_hash gate). re-executes via `sh -c "<cmd>"`,
-    captures exit code + stdout hash + new ref_hash, appends as fresh
-    evidence. integration-test --target and replay-test --dataset are
-    carried forward from the prior.
+    captures exit code + stdout hash + new ref_hash, and for stat-test /
+    benchmark / estimate re-parses the local JSON artifact at --ref before
+    appending fresh evidence. integration-test --target and replay-test
+    --dataset are carried forward from the prior.
   - if the test file's content changed since prior evidence, drift is
     detected and rerun refuses with exit 1 unless --acknowledge-drift is set.
   - contradiction-gate: if the fresh exit_code disagrees with the stored

@@ -46,9 +46,8 @@ clms add "polymarket lags binance by ~300ms during BTC moves" --tag market:btc
 clms verify 1 \
   --method stat-test \
   --ref ./runs/lag_test.json \
-  --test-type ks --p-value 0.003 --sample-size 4821 \
-  --data-source real \
-  --note "ks-test, 1 week of captured ticks"
+  --cmd "python3 ./tests/lag_test.py --out ./runs/lag_test.json" \
+  --note "artifact is source of truth; optional echo-check flags omitted"
 # → #1 [verified · empirical]
 
 clms add "we can arb this lag with fast router" --depends-on 1 --tag strategy:arb
@@ -61,7 +60,7 @@ clms verify 2 --method integration-test --ref ./router_bench.sh \
 # later, you find the original test had lookahead bias:
 clms add "lag is actually ~500ms not 300ms" --tag market:btc
 clms verify 3 --method stat-test --ref ./runs/lag_v2.json \
-  --test-type ks --p-value 0.001 --sample-size 9000 --data-source real
+  --cmd "python3 ./tests/lag_v2.py --out ./runs/lag_v2.json"
 
 clms refute 1 --by 3 --reason "lookahead bias in v1 test" --cascade
 # → #1 refuted, #2 auto-flagged suspect (it depended on #1)
@@ -146,9 +145,9 @@ each method requires specific fields. missing any → exit 1, no claim is writte
 | `prop-test` | `--ref` `--cmd` | randomized input generator (proptest/quickcheck/fuzz) |
 | `integration-test` | `--ref` `--target` `--cmd` | the real external system at `--target` (loopback / RFC1918 refused unless `--allow-local`) |
 | `replay-test` | `--ref` `--dataset` `--cmd` | frozen real-world capture at `--dataset` |
-| `stat-test` | `--ref` `--test-type` `--p-value` `--sample-size` `--data-source` | real \| live samples (simulated refused; `p ∈ [0,1]`, `n ≥ 2`; `--test-type` is a closed enum) |
-| `benchmark` | `--ref` `--cmd` `--metric` `--metric-value` `--threshold` `--sample-size` `--data-source` | measured metric on held-out real data vs declared threshold; direction (higher- or lower-better) fixed per metric |
-| `estimate` | `--ref` `--cmd` `--estimator` `--point-value` `--ci-lower` `--ci-upper` `--confidence-level` `--sample-size` `--data-source` | claimed point estimate with CI; `ci_lower ≤ point ≤ ci_upper`, `0 < conf < 1` |
+| `stat-test` | `--ref` `--cmd` + local JSON artifact fields `test_type` `p_value` `sample_size` `data_source` | real \| live samples (simulated refused; `p ∈ [0,1]`, `n ≥ 2`; `--test-type` is a closed enum). matching CLI flags are optional echo-checks only |
+| `benchmark` | `--ref` `--cmd` `--threshold` + local JSON artifact fields `metric` `metric_value` `sample_size` `data_source` | measured metric on held-out real data vs declared threshold; direction (higher- or lower-better) fixed per metric. matching CLI flags are optional echo-checks only |
+| `estimate` | `--ref` `--cmd` + local JSON artifact fields `estimator` `point_value` `ci_lower` `ci_upper` `confidence_level` `sample_size` `data_source` | claimed point estimate with CI; `ci_lower ≤ point ≤ ci_upper`, `0 < conf < 1`. matching CLI flags are optional echo-checks only |
 | `observed` | `--ref` (file / URL / `sha256:HEX`) | a captured artifact |
 | `documented` | `--ref` `--quote "<exact text>"` | primary-source document |
 | `derived` | `--from <id>` `--from <id>` (min 2, each verified, no cycles, no self) | upstream claims (cascade on refute) |
@@ -157,9 +156,10 @@ for `prop-test` / `integration-test` / `replay-test`, `--cmd` is **executed**
 at verify time. clms captures the actual `exit_code` and `stdout_hash`. the
 optional `--exit-code` flag is reinterpreted as a *predicted* value:
 mismatch with the actual exit is a hard error before any state mutation.
-for `benchmark` / `estimate`, `--cmd` is also executed at verify time and
-must exit `0`; the gate signal is the structural check (metric vs threshold,
-or point inside CI) which is enforced *before* the cmd runs.
+for `stat-test` / `benchmark` / `estimate`, `--cmd` is also executed at
+verify time and must exit `0`; clms then parses the local JSON artifact at
+`--ref` and treats that artifact as the source of truth. matching CLI flags,
+if present, are only consistency checks.
 
 local file refs (and `--dataset` on replay-test) are content-hashed at write
 time. tampering is detectable via three drift checks: ref drift (same path,
@@ -213,15 +213,16 @@ each claim stores its own outgoing edges. reverse lookups via sqlite index.
 
 ```
 .claims/
-├── 000001.json     ← canonical source of truth (content-hashed)
+├── 000001.json     ← canonical source of truth (content-hashed + keyed-MAC)
 ├── 000002.json
 ├── ...
-└── index.db        ← sqlite, rebuilt anytime via `clms reindex`
+└── index.db        ← sqlite, rebuilt and legacy claims re-signed via `clms reindex`
 ```
 
 claim files are immutable in spirit. mutations (verify, refute) update the
-file in place but the content-hash + git history give tamper evidence. for
-total immutability, commit `.claims/` to git after every write.
+file in place but the content-hash + keyed integrity MAC + git history give
+tamper evidence. for total immutability, commit `.claims/` to git after every
+write.
 
 ## ids
 
@@ -239,6 +240,10 @@ cli accepts either: `clms show 42` and `clms show 01HXYZ...` both work.
 | `CLAIMS_FORMAT` | default output format (`default` \| `human` \| `ai`) |
 | `CLAIMS_AGENT` | auto-stamp every write with this agent name |
 | `CLAIMS_SESSION` | auto-stamp every write with this session id |
+| `CLAIMS_BACKFILL` | `=1` authorizes provenance overrides on `clms add` |
+| `CLAIMS_REPAIR` | `=1` disables claim-integrity verification for forensic reads; all mutators refuse |
+| `CLAIMS_INTEGRITY_KEY_FILE` | path to keyed integrity material (default `~/.clms/integrity.key`, auto-created on first write) |
+| `CLAIMS_INTEGRITY_KEY_HEX` | 32-byte (64 hex chars) integrity key inline via env; overrides file |
 
 ## agent integration
 

@@ -222,15 +222,22 @@ struct VerifyArgs {
     r#ref: String,
     #[arg(long)]
     note: Option<String>,
+    /// stat-test only: optional echo-check for the p_value parsed from the
+    /// local JSON artifact at --ref. if supplied, it must match the artifact.
     #[arg(long)]
     p_value: Option<f64>,
+    /// stat-test / benchmark / estimate: optional echo-check for the
+    /// sample_size parsed from the local JSON artifact at --ref. if supplied,
+    /// it must match the artifact.
     #[arg(long)]
     sample_size: Option<u64>,
-    /// stat-test only: closed enum (chi-squared | t-test-paired | t-test-unpaired |
-    /// t-test-one-sample | welch-t | anova | kolmogorov-smirnov | mann-whitney-u |
-    /// wilcoxon-signed-rank | shapiro-wilk | anderson-darling | fisher | permutation |
-    /// likelihood-ratio | chi-squared-goodness-of-fit). agent-typed strings like 'AUC'
-    /// or 'MyTest' are refused at parse time.
+    /// stat-test only: optional echo-check for the test_type parsed from the
+    /// local JSON artifact at --ref. closed enum (chi-squared | t-test-paired |
+    /// t-test-unpaired | t-test-one-sample | welch-t | anova |
+    /// kolmogorov-smirnov | mann-whitney-u | wilcoxon-signed-rank |
+    /// shapiro-wilk | anderson-darling | fisher | permutation |
+    /// likelihood-ratio | chi-squared-goodness-of-fit). if supplied, it must
+    /// match the artifact exactly.
     #[arg(long, value_enum)]
     test_type: Option<HypothesisTest>,
     #[arg(long)]
@@ -240,6 +247,9 @@ struct VerifyArgs {
     #[arg(long = "from")]
     from: Vec<u64>,
     /// shell command that produced this evidence. enables `claims rerun <id>` later.
+    /// for stat-test / benchmark / estimate, the command must exit 0 and
+    /// produce the local JSON artifact at --ref; clms parses measured values
+    /// from that artifact instead of trusting cli flags.
     #[arg(long)]
     cmd: Option<String>,
     /// integration-test only: real external system probed (url/host/endpoint).
@@ -250,7 +260,9 @@ struct VerifyArgs {
     /// content-hashed at write time. synthetic data is not allowed.
     #[arg(long)]
     dataset: Option<String>,
-    /// stat-test only: real | live. simulated/synthetic data is refused.
+    /// stat-test / benchmark / estimate: optional echo-check for the
+    /// data_source parsed from the local JSON artifact at --ref. valid:
+    /// real | live. if supplied, it must match the artifact.
     #[arg(long)]
     data_source: Option<String>,
     /// required when this --ref's content has changed since a prior evidence entry on the same claim.
@@ -263,12 +275,13 @@ struct VerifyArgs {
     /// control" — a service on your own machine fails that test.
     #[arg(long)]
     allow_local: bool,
-    /// benchmark only: classifier/regression metric being measured.
+    /// benchmark only: optional echo-check for the metric parsed from the
+    /// local JSON artifact at --ref.
     #[arg(long, value_enum)]
     metric: Option<BenchmarkMetric>,
-    /// benchmark only: agent-declared measured value of `metric` on held-out
-    /// data. compared against --threshold per direction (higher- or
-    /// lower-better, fixed per metric).
+    /// benchmark only: optional echo-check for the measured value parsed from
+    /// the local JSON artifact at --ref. compared against --threshold per
+    /// direction (higher- or lower-better, fixed per metric).
     #[arg(long)]
     metric_value: Option<f64>,
     /// benchmark only: the pass threshold. for higher-better metrics
@@ -276,21 +289,24 @@ struct VerifyArgs {
     /// lower-better (rmse, mae, log-loss) metric_value <= threshold passes.
     #[arg(long)]
     threshold: Option<f64>,
-    /// estimate only: statistical quantity being reported (mean, median,
-    /// skewness, cohens-d, etc.).
+    /// estimate only: optional echo-check for the estimator parsed from the
+    /// local JSON artifact at --ref.
     #[arg(long, value_enum)]
     estimator: Option<Estimator>,
-    /// estimate only: agent-declared point estimate. must lie within
-    /// [--ci-lower, --ci-upper] or verification is refused.
+    /// estimate only: optional echo-check for the point estimate parsed from
+    /// the local JSON artifact at --ref. must lie within [ci_lower, ci_upper].
     #[arg(long)]
     point_value: Option<f64>,
-    /// estimate only: lower bound of the confidence interval.
+    /// estimate only: optional echo-check for the CI lower bound parsed from
+    /// the local JSON artifact at --ref.
     #[arg(long)]
     ci_lower: Option<f64>,
-    /// estimate only: upper bound of the confidence interval.
+    /// estimate only: optional echo-check for the CI upper bound parsed from
+    /// the local JSON artifact at --ref.
     #[arg(long)]
     ci_upper: Option<f64>,
-    /// estimate only: confidence level, in (0, 1). typical: 0.90 / 0.95 / 0.99.
+    /// estimate only: optional echo-check for the confidence level parsed from
+    /// the local JSON artifact at --ref.
     #[arg(long)]
     confidence_level: Option<f64>,
 }
@@ -440,6 +456,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Suspect { exclude_agent } => cmd_suspect(&store, fmt, &exclude_agent),
         Cmd::Reindex => {
+            refuse_in_repair_mode("reindex")?;
             let n = store.reindex_all()?;
             println!("reindexed {} claims", n);
             Ok(())
@@ -460,6 +477,11 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Schema { target } => cmd_schema(target, fmt),
         Cmd::InstallAgents { force, dry_run } => cmd_install_agents(fmt, force, dry_run),
         Cmd::Archaeology { sub } => {
+            match &sub {
+                ArchaeologySub::Commit(_) => refuse_in_repair_mode("archaeology commit")?,
+                ArchaeologySub::Purge(_) => refuse_in_repair_mode("archaeology purge")?,
+                ArchaeologySub::Suggest(_) => {}
+            }
             let s = match sub {
                 ArchaeologySub::Suggest(a) => archaeology::Sub::Suggest(archaeology::SuggestArgs {
                     max: a.max,
@@ -671,6 +693,7 @@ fn parse_created_at(s: &str) -> Result<chrono::DateTime<Utc>> {
 }
 
 fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
+    refuse_in_repair_mode("add")?;
     if a.text.trim().is_empty() {
         return Err(anyhow!("claim text cannot be empty"));
     }
@@ -729,6 +752,7 @@ fn cmd_add(store: &mut Store, a: AddArgs, fmt: OutputFormat) -> Result<()> {
         created_at: stamp_at,
         updated_at: stamp_at,
         content_hash: None,
+        integrity_mac: None,
         archaeology_meta: None,
         backfilled,
         min_tier,
@@ -836,16 +860,226 @@ fn build_evidence(a: &VerifyArgs, m: EvidenceMethod) -> Result<Evidence> {
     })
 }
 
-/// CLAIMS_REPAIR=1 disables the content_hash gate in store::read_claim so a
-/// human can recover from a corrupted .claims/ tree (forensic forward-read).
-/// any *mutating* command run while repair is in effect would carry the
-/// tampered state forward; in the worst case (rerun) it would execute a
-/// tampered cmd field as shell. mutators bail at the top with this helper.
+fn read_local_json_artifact(method: EvidenceMethod, r#ref: &str) -> Result<serde_json::Value> {
+    let path = std::path::Path::new(r#ref);
+    if !path.is_file() {
+        return Err(anyhow!(
+            "{} requires --ref to be a local file produced by --cmd. '{}' does not exist as a local file after execution.",
+            method.as_str(),
+            r#ref,
+        ));
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("read {} artifact '{}': {}", method.as_str(), r#ref, e))?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        anyhow!(
+            "{} --ref '{}' must contain valid JSON so clms can derive the measured values from the artifact. {}",
+            method.as_str(),
+            r#ref,
+            e,
+        )
+    })?;
+    if !value.is_object() {
+        return Err(anyhow!(
+            "{} --ref '{}' must contain a top-level JSON object.",
+            method.as_str(),
+            r#ref,
+        ));
+    }
+    Ok(value)
+}
+
+fn artifact_req_str<'a>(value: &'a serde_json::Value, method: EvidenceMethod, r#ref: &str, key: &str) -> Result<&'a str> {
+    value[key].as_str().ok_or_else(|| {
+        anyhow!(
+            "{} artifact '{}' is missing string field '{}'.",
+            method.as_str(),
+            r#ref,
+            key,
+        )
+    })
+}
+
+fn artifact_req_f64(value: &serde_json::Value, method: EvidenceMethod, r#ref: &str, key: &str) -> Result<f64> {
+    value[key].as_f64().ok_or_else(|| {
+        anyhow!(
+            "{} artifact '{}' is missing numeric field '{}'.",
+            method.as_str(),
+            r#ref,
+            key,
+        )
+    })
+}
+
+fn artifact_req_u64(value: &serde_json::Value, method: EvidenceMethod, r#ref: &str, key: &str) -> Result<u64> {
+    value[key].as_u64().ok_or_else(|| {
+        anyhow!(
+            "{} artifact '{}' is missing integer field '{}'.",
+            method.as_str(),
+            r#ref,
+            key,
+        )
+    })
+}
+
+fn reject_artifact_mismatch(method: EvidenceMethod, r#ref: &str, flag: &str, cli: &str, artifact: &str) -> Result<()> {
+    Err(anyhow!(
+        "{} artifact '{}' disagrees with --{}: cli gave '{}', artifact says '{}'. clms now treats the artifact as the source of truth; fix the script or drop the stale flag.",
+        method.as_str(),
+        r#ref,
+        flag,
+        cli,
+        artifact,
+    ))
+}
+
+fn maybe_match_str(method: EvidenceMethod, r#ref: &str, flag: &str, cli: Option<&str>, artifact: &str) -> Result<()> {
+    if let Some(cli) = cli {
+        if cli != artifact {
+            return reject_artifact_mismatch(method, r#ref, flag, cli, artifact);
+        }
+    }
+    Ok(())
+}
+
+fn maybe_match_f64(method: EvidenceMethod, r#ref: &str, flag: &str, cli: Option<f64>, artifact: f64) -> Result<()> {
+    if let Some(cli) = cli {
+        if cli != artifact {
+            return reject_artifact_mismatch(
+                method,
+                r#ref,
+                flag,
+                &cli.to_string(),
+                &artifact.to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn maybe_match_u64(method: EvidenceMethod, r#ref: &str, flag: &str, cli: Option<u64>, artifact: u64) -> Result<()> {
+    if let Some(cli) = cli {
+        if cli != artifact {
+            return reject_artifact_mismatch(
+                method,
+                r#ref,
+                flag,
+                &cli.to_string(),
+                &artifact.to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn populate_stat_test_from_artifact(ev: &mut Evidence) -> Result<()> {
+    let doc = read_local_json_artifact(ev.method, &ev.r#ref)?;
+    let test_name = artifact_req_str(&doc, ev.method, &ev.r#ref, "test_type")?;
+    let parsed_test = HypothesisTest::parse(test_name)?;
+    let p = artifact_req_f64(&doc, ev.method, &ev.r#ref, "p_value")?;
+    let n = artifact_req_u64(&doc, ev.method, &ev.r#ref, "sample_size")?;
+    let src_name = artifact_req_str(&doc, ev.method, &ev.r#ref, "data_source")?;
+    let parsed_src = DataSource::parse(src_name)?;
+
+    maybe_match_str(ev.method, &ev.r#ref, "test-type", ev.test_type.map(|t| t.as_str()), parsed_test.as_str())?;
+    maybe_match_f64(ev.method, &ev.r#ref, "p-value", ev.p_value, p)?;
+    maybe_match_u64(ev.method, &ev.r#ref, "sample-size", ev.sample_size, n)?;
+    maybe_match_str(ev.method, &ev.r#ref, "data-source", ev.data_source.map(|d| d.as_str()), parsed_src.as_str())?;
+
+    ev.test_type = Some(parsed_test);
+    ev.p_value = Some(p);
+    ev.sample_size = Some(n);
+    ev.data_source = Some(parsed_src);
+    Ok(())
+}
+
+fn populate_benchmark_from_artifact(ev: &mut Evidence) -> Result<()> {
+    let doc = read_local_json_artifact(ev.method, &ev.r#ref)?;
+    let metric_name = artifact_req_str(&doc, ev.method, &ev.r#ref, "metric")?;
+    let parsed_metric = BenchmarkMetric::parse(metric_name)?;
+    let metric_value = artifact_req_f64(&doc, ev.method, &ev.r#ref, "metric_value")?;
+    let n = artifact_req_u64(&doc, ev.method, &ev.r#ref, "sample_size")?;
+    let src_name = artifact_req_str(&doc, ev.method, &ev.r#ref, "data_source")?;
+    let parsed_src = DataSource::parse(src_name)?;
+
+    maybe_match_str(ev.method, &ev.r#ref, "metric", ev.metric.map(|m| m.as_str()), parsed_metric.as_str())?;
+    maybe_match_f64(ev.method, &ev.r#ref, "metric-value", ev.metric_value, metric_value)?;
+    maybe_match_u64(ev.method, &ev.r#ref, "sample-size", ev.sample_size, n)?;
+    maybe_match_str(ev.method, &ev.r#ref, "data-source", ev.data_source.map(|d| d.as_str()), parsed_src.as_str())?;
+
+    ev.metric = Some(parsed_metric);
+    ev.metric_value = Some(metric_value);
+    ev.sample_size = Some(n);
+    ev.data_source = Some(parsed_src);
+    Ok(())
+}
+
+fn populate_estimate_from_artifact(ev: &mut Evidence) -> Result<()> {
+    let doc = read_local_json_artifact(ev.method, &ev.r#ref)?;
+    let estimator_name = artifact_req_str(&doc, ev.method, &ev.r#ref, "estimator")?;
+    let parsed_estimator = Estimator::parse(estimator_name)?;
+    let point = artifact_req_f64(&doc, ev.method, &ev.r#ref, "point_value")?;
+    let lo = artifact_req_f64(&doc, ev.method, &ev.r#ref, "ci_lower")?;
+    let hi = artifact_req_f64(&doc, ev.method, &ev.r#ref, "ci_upper")?;
+    let conf = artifact_req_f64(&doc, ev.method, &ev.r#ref, "confidence_level")?;
+    let n = artifact_req_u64(&doc, ev.method, &ev.r#ref, "sample_size")?;
+    let src_name = artifact_req_str(&doc, ev.method, &ev.r#ref, "data_source")?;
+    let parsed_src = DataSource::parse(src_name)?;
+
+    maybe_match_str(ev.method, &ev.r#ref, "estimator", ev.estimator.map(|m| m.as_str()), parsed_estimator.as_str())?;
+    maybe_match_f64(ev.method, &ev.r#ref, "point-value", ev.point_value, point)?;
+    maybe_match_f64(ev.method, &ev.r#ref, "ci-lower", ev.ci_lower, lo)?;
+    maybe_match_f64(ev.method, &ev.r#ref, "ci-upper", ev.ci_upper, hi)?;
+    maybe_match_f64(ev.method, &ev.r#ref, "confidence-level", ev.confidence_level, conf)?;
+    maybe_match_u64(ev.method, &ev.r#ref, "sample-size", ev.sample_size, n)?;
+    maybe_match_str(ev.method, &ev.r#ref, "data-source", ev.data_source.map(|d| d.as_str()), parsed_src.as_str())?;
+
+    ev.estimator = Some(parsed_estimator);
+    ev.point_value = Some(point);
+    ev.ci_lower = Some(lo);
+    ev.ci_upper = Some(hi);
+    ev.confidence_level = Some(conf);
+    ev.sample_size = Some(n);
+    ev.data_source = Some(parsed_src);
+    Ok(())
+}
+
+fn populate_empirical_artifact_fields(ev: &mut Evidence) -> Result<()> {
+    match ev.method {
+        EvidenceMethod::StatTest => populate_stat_test_from_artifact(ev),
+        EvidenceMethod::Benchmark => populate_benchmark_from_artifact(ev),
+        EvidenceMethod::Estimate => populate_estimate_from_artifact(ev),
+        _ => Ok(()),
+    }
+}
+
+fn preflight_artifact_driven_inputs(ev: &Evidence) -> Result<()> {
+    let cmd = ev.cmd.as_deref().unwrap_or("").trim();
+    if ev.r#ref.trim().is_empty() {
+        return Err(anyhow!(
+            "{} requires --ref <path-to-local-json-artifact>",
+            ev.method.as_str()
+        ));
+    }
+    if cmd.is_empty() {
+        return Err(anyhow!(
+            "{} requires --cmd \"<shell cmd that produces the local json artifact at --ref>\".",
+            ev.method.as_str()
+        ));
+    }
+    Ok(())
+}
+
+/// CLAIMS_REPAIR=1 disables claim-integrity verification in store::read_claim
+/// so a human can recover from a corrupted .claims/ tree (forensic
+/// forward-read). any *mutating* command run while repair is in effect would
+/// carry the tampered state forward; in the worst case (rerun) it would
+/// execute a tampered cmd field as shell. mutators bail at the top with this
+/// helper.
 fn refuse_in_repair_mode(op: &str) -> Result<()> {
     if std::env::var("CLAIMS_REPAIR").is_ok() {
         return Err(anyhow!(
-            "{}: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips content_hash validation for forensic recovery (show, diff-evidence, timeline, render-context, reindex). \
-fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered cmd field could be carried forward into a rerun and executed as shell.",
+            "{}: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex or archaeology mutation.", 
             op
         ));
     }
@@ -864,78 +1098,21 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
     }
     let m = EvidenceMethod::parse(&a.method)?;
     let mut ev = build_evidence(&a, m)?;
-    validate_evidence(&ev, store, seq)?;
-    // loopback / private-network --target check for integration-test.
-    // integration-test's whole point is hitting a real external system the
-    // author does not control. localhost / 127.x / RFC1918 fail that. allow
-    // the override (--allow-local) because dev/CI smoketests legitimately
-    // probe local services, but make it explicit so reviewers can filter.
-    if matches!(m, EvidenceMethod::IntegrationTest) {
-        if let Some(t) = ev.target.as_deref() {
-            if target_is_local(t) && !a.allow_local {
-                return Err(anyhow!(
-                    "integration-test --target '{}' is a loopback / private-network address. integration-test must hit a real external system the author does not control; a service on your own machine cannot falsify that.\n\npass --allow-local if you intentionally want to record a local smoketest as integration evidence (lower-confidence by convention, but accepted), or use --method observed with a log artifact instead.",
-                    t
-                ));
-            }
-        }
-    }
-    // execute --cmd at verify time for methods that take one. an agent can no
-    // longer pass --exit-code 0 against a command that returns 1; clms runs
-    // the command itself and stores the actual result. the user-supplied
-    // --exit-code, if any, becomes a *predicted* value: a mismatch with the
-    // actual value is a hard error before any state mutation. without this
-    // pass, the falsifiability bar for prop/integration/replay was an honor
-    // system since the contradiction only surfaced on `clms rerun` (which a
-    // cheating agent never invokes).
     if matches!(
         m,
-        EvidenceMethod::PropTest | EvidenceMethod::IntegrationTest | EvidenceMethod::ReplayTest
+        EvidenceMethod::StatTest | EvidenceMethod::Benchmark | EvidenceMethod::Estimate
     ) {
+        preflight_artifact_driven_inputs(&ev)?;
         let cmd = ev
             .cmd
             .as_deref()
-            .expect("validate_evidence guarantees --cmd presence for these methods");
-        let claimed_exit = ev.exit_code;
-        eprintln!("executing: {}", cmd);
-        let (actual_exit, stdout) = run_cmd(cmd)?;
-        if let Some(claimed) = claimed_exit {
-            if claimed != actual_exit {
-                let preview = String::from_utf8_lossy(&stdout[..stdout.len().min(200)]);
-                return Err(anyhow!(
-                    "--exit-code mismatch on claim #{}: you claimed {}, --cmd actually exited {}.\n  cmd:    {}\n  stdout: {:?}{}\n\nclms now executes --cmd at verify time and captures the actual exit_code. either fix --cmd, drop the (now-optional) --exit-code flag, or write a different claim if the contradiction is real.",
-                    seq,
-                    claimed,
-                    actual_exit,
-                    cmd,
-                    preview,
-                    if stdout.len() > 200 { " ..." } else { "" },
-                ));
-            }
-        }
-        ev.exit_code = Some(actual_exit);
-        ev.stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
-    }
-    // benchmark + estimate: execute --cmd to capture stdout_hash for drift
-    // detection on rerun. unlike prop/integration/replay, the gate signal is
-    // NOT exit_code — the validators (benchmark: metric_value vs threshold;
-    // estimate: point inside CI) have already enforced the structural pass
-    // above. we still run --cmd so the eval/estimator is auditable on disk:
-    // an agent who lies about metric_value or point_value gets caught by
-    // the next reviewer re-running the captured cmd. capturing the actual
-    // exit_code too gives a cheap sanity check (a script that crashed but
-    // the agent reported a number anyway is now visible).
-    if matches!(m, EvidenceMethod::Benchmark | EvidenceMethod::Estimate) {
-        let cmd = ev
-            .cmd
-            .as_deref()
-            .expect("validators guarantee --cmd presence for benchmark + estimate");
+            .expect("preflight guarantees --cmd presence for artifact-driven methods");
         eprintln!("executing: {}", cmd);
         let (actual_exit, stdout) = run_cmd(cmd)?;
         if actual_exit != 0 {
             let preview = String::from_utf8_lossy(&stdout[..stdout.len().min(200)]);
             return Err(anyhow!(
-                "{} --cmd exited {} (expected 0). the script must succeed for its reported value to be auditable.\n  cmd:    {}\n  stdout: {:?}{}",
+                "{} --cmd exited {} (expected 0). the script must succeed and produce the local artifact at --ref so clms can derive the measured values from that artifact.\n  cmd:    {}\n  stdout: {:?}{}",
                 m.as_str(),
                 actual_exit,
                 cmd,
@@ -945,6 +1122,62 @@ fn cmd_verify(store: &mut Store, a: VerifyArgs, fmt: OutputFormat) -> Result<()>
         }
         ev.exit_code = Some(actual_exit);
         ev.stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
+        ev.ref_hash = hash_ref_if_local(&ev.r#ref);
+        populate_empirical_artifact_fields(&mut ev)?;
+        validate_evidence(&ev, store, seq)?;
+    } else {
+        validate_evidence(&ev, store, seq)?;
+        // loopback / private-network --target check for integration-test.
+        // integration-test's whole point is hitting a real external system the
+        // author does not control. localhost / 127.x / RFC1918 fail that. allow
+        // the override (--allow-local) because dev/CI smoketests legitimately
+        // probe local services, but make it explicit so reviewers can filter.
+        if matches!(m, EvidenceMethod::IntegrationTest) {
+            if let Some(t) = ev.target.as_deref() {
+                if target_is_local(t) && !a.allow_local {
+                    return Err(anyhow!(
+                        "integration-test --target '{}' is a loopback / private-network address. integration-test must hit a real external system the author does not control; a service on your own machine cannot falsify that.\n\npass --allow-local if you intentionally want to record a local smoketest as integration evidence (lower-confidence by convention, but accepted), or use --method observed with a log artifact instead.",
+                        t
+                    ));
+                }
+            }
+        }
+        // execute --cmd at verify time for methods that take one. an agent can no
+        // longer pass --exit-code 0 against a command that returns 1; clms runs
+        // the command itself and stores the actual result. the user-supplied
+        // --exit-code, if any, becomes a *predicted* value: a mismatch with the
+        // actual value is a hard error before any state mutation. without this
+        // pass, the falsifiability bar for prop/integration/replay was an honor
+        // system since the contradiction only surfaced on `clms rerun` (which a
+        // cheating agent never invokes).
+        if matches!(
+            m,
+            EvidenceMethod::PropTest | EvidenceMethod::IntegrationTest | EvidenceMethod::ReplayTest
+        ) {
+            let cmd = ev
+                .cmd
+                .as_deref()
+                .expect("validate_evidence guarantees --cmd presence for these methods");
+            let claimed_exit = ev.exit_code;
+            eprintln!("executing: {}", cmd);
+            let (actual_exit, stdout) = run_cmd(cmd)?;
+            if let Some(claimed) = claimed_exit {
+                if claimed != actual_exit {
+                    let preview = String::from_utf8_lossy(&stdout[..stdout.len().min(200)]);
+                    return Err(anyhow!(
+                        "--exit-code mismatch on claim #{}: you claimed {}, --cmd actually exited {}.\n  cmd:    {}\n  stdout: {:?}{}\n\nclms now executes --cmd at verify time and captures the actual exit_code. either fix --cmd, drop the (now-optional) --exit-code flag, or write a different claim if the contradiction is real.",
+                        seq,
+                        claimed,
+                        actual_exit,
+                        cmd,
+                        preview,
+                        if stdout.len() > 200 { " ..." } else { "" },
+                    ));
+                }
+            }
+            ev.exit_code = Some(actual_exit);
+            ev.stdout_hash = Some(blake3::hash(&stdout).to_hex().to_string());
+        }
     }
     if let Some((prior_hash, prior_at)) = detect_drift(&claim, &ev.r#ref, &ev.ref_hash) {
         if !a.acknowledge_drift {
@@ -1060,7 +1293,7 @@ fn cmd_rerun(store: &mut Store, a: RerunArgs, fmt: OutputFormat) -> Result<()> {
     let method = prior.method;
     let prior_target = prior.target.clone();
     let prior_dataset = prior.dataset.clone();
-    let prior_data_source = prior.data_source;
+    let prior_threshold = prior.threshold;
     let prior_exit = prior.exit_code;
     // tamper-gate: re-hash the stored cmd and refuse to execute if the json was
     // edited since verify time. without this check, anyone who can write to a
@@ -1103,7 +1336,7 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
     }
 
     let new_dataset_hash = prior_dataset.as_deref().and_then(hash_ref_if_local);
-    let ev = Evidence {
+    let mut ev = Evidence {
         method,
         r#ref,
         note: Some(format!("rerun via `clms rerun {}`", seq)),
@@ -1120,10 +1353,10 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
         target: prior_target,
         dataset: prior_dataset,
         dataset_hash: new_dataset_hash,
-        data_source: prior_data_source,
+        data_source: None,
         metric: None,
         metric_value: None,
-        threshold: None,
+        threshold: prior_threshold,
         estimator: None,
         point_value: None,
         ci_lower: None,
@@ -1131,6 +1364,25 @@ rerun would execute attacker-controlled shell. write a new claim instead.",
         confidence_level: None,
         recorded_at: Utc::now(),
     };
+    if matches!(
+        method,
+        EvidenceMethod::StatTest | EvidenceMethod::Benchmark | EvidenceMethod::Estimate
+    ) {
+        if exit_code != 0 {
+            let preview = String::from_utf8_lossy(&stdout[..stdout.len().min(200)]);
+            return Err(anyhow!(
+                "rerun failed for {} on claim #{}: --cmd exited {} (expected 0 so clms can parse the local artifact at --ref).\n  cmd:    {}\n  stdout: {:?}{}",
+                method.as_str(),
+                seq,
+                exit_code,
+                ev.cmd.as_deref().unwrap_or(""),
+                preview,
+                if stdout.len() > 200 { " ..." } else { "" },
+            ));
+        }
+        populate_empirical_artifact_fields(&mut ev)?;
+        validate_evidence(&ev, store, seq)?;
+    }
     claim.evidence.push(ev);
     claim.updated_at = Utc::now();
 

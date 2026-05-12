@@ -777,6 +777,7 @@ fn build_pending_claim(
         created_at: now,
         updated_at: now,
         content_hash: None,
+        integrity_mac: None,
         archaeology_meta: Some(ArchaeologyMeta {
             candidate_id: cid,
             kind,

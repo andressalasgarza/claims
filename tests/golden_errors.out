@@ -63,25 +63,29 @@ error: invalid value 'NDCG' for '--metric <METRIC>'
 For more information, try '--help'.
 
 === benchmark: AUC 0.6 below threshold 0.8 (higher-better) ===
-+ target/release/clms verify 1 --method=benchmark --ref=x --metric=auc-roc --metric-value=0.6 --threshold=0.8 --sample-size=1000 --data-source=real --cmd=echo
++ target/release/clms verify 1 --method=benchmark --ref=TMPDIR/bench_low.json --threshold=0.8 --cmd=true
 exit=1
+executing: true
 Error: benchmark refused: metric_value=0.6 did not meet threshold=0.8 for metric 'auc-roc' (higher-better, need value >= threshold).
 state stays pending; either fix the eval, lower the threshold honestly, or write a different claim if the miss is the actual finding.
 
 === benchmark: RMSE 0.9 above threshold 0.3 (lower-better) ===
-+ target/release/clms verify 1 --method=benchmark --ref=x --metric=rmse --metric-value=0.9 --threshold=0.3 --sample-size=1000 --data-source=real --cmd=echo
++ target/release/clms verify 1 --method=benchmark --ref=TMPDIR/bench_high_rmse.json --threshold=0.3 --cmd=true
 exit=1
+executing: true
 Error: benchmark refused: metric_value=0.9 did not meet threshold=0.3 for metric 'rmse' (lower-better, need value <= threshold).
 state stays pending; either fix the eval, lower the threshold honestly, or write a different claim if the miss is the actual finding.
 
-=== benchmark: metric_value NaN ===
-+ target/release/clms verify 1 --method=benchmark --ref=x --metric=f1 --metric-value=NaN --threshold=0.5 --sample-size=100 --data-source=real --cmd=echo
+=== benchmark: metric_value not numeric in artifact ===
++ target/release/clms verify 1 --method=benchmark --ref=TMPDIR/bench_non_numeric.json --threshold=0.5 --cmd=true
 exit=1
-Error: benchmark --metric-value must be finite (got NaN). NaN/inf are not measurable values.
+executing: true
+Error: benchmark artifact 'TMPDIR/bench_non_numeric.json' is missing numeric field 'metric_value'.
 
 === benchmark: missing --threshold ===
-+ target/release/clms verify 1 --method=benchmark --ref=x --metric=f1 --metric-value=0.8 --sample-size=100 --data-source=real --cmd=echo
++ target/release/clms verify 1 --method=benchmark --ref=TMPDIR/bench_ok.json --cmd=true
 exit=1
+executing: true
 Error: benchmark requires --threshold <float>
 
 === benchmark: --metric on prop-test ===
@@ -98,29 +102,34 @@ error: invalid value 'GaussianMode' for '--estimator <ESTIMATOR>'
 For more information, try '--help'.
 
 === estimate: point outside CI ===
-+ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=2.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd=echo
++ target/release/clms verify 1 --method=estimate --ref=TMPDIR/est_point_out.json --cmd=true
 exit=1
+executing: true
 Error: estimate --point-value=2 is outside the declared CI [0.9, 1.1]. the point estimate must lie within its own interval; otherwise the CI is misreported.
 
 === estimate: ci_lower > ci_upper ===
-+ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=1.0 --ci-lower=1.5 --ci-upper=0.5 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd=echo
++ target/release/clms verify 1 --method=estimate --ref=TMPDIR/est_inverted_ci.json --cmd=true
 exit=1
+executing: true
 Error: estimate --ci-lower=1.5 > --ci-upper=0.5. lower bound must be ≤ upper bound.
 
 === estimate: confidence_level=1.5 (out of range) ===
-+ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=1.5 --sample-size=100 --data-source=real --cmd=echo
++ target/release/clms verify 1 --method=estimate --ref=TMPDIR/est_conf_high.json --cmd=true
 exit=1
+executing: true
 Error: estimate --confidence-level must be in (0, 1) (got 1.5). typical values: 0.90, 0.95, 0.99.
 
 === estimate: confidence_level=0 (boundary) ===
-+ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0 --sample-size=100 --data-source=real --cmd=echo
++ target/release/clms verify 1 --method=estimate --ref=TMPDIR/est_conf_zero.json --cmd=true
 exit=1
+executing: true
 Error: estimate --confidence-level must be in (0, 1) (got 0). typical values: 0.90, 0.95, 0.99.
 
-=== estimate: point_value Inf ===
-+ target/release/clms verify 1 --method=estimate --ref=x --estimator=mean --point-value=Infinity --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd=echo
+=== estimate: point_value not numeric in artifact ===
++ target/release/clms verify 1 --method=estimate --ref=TMPDIR/est_non_numeric_point.json --cmd=true
 exit=1
-Error: estimate --point-value must be finite (got inf). NaN/inf are not measurable values.
+executing: true
+Error: estimate artifact 'TMPDIR/est_non_numeric_point.json' is missing numeric field 'point_value'.
 
 === estimate: --estimator on observed ===
 + target/release/clms verify 1 --method=observed --ref=x --estimator=mean
@@ -142,10 +151,16 @@ Error: integration-test requires --target <url-or-host>. the test must hit a rea
 exit=1
 Error: replay-test requires --dataset <path>. the dataset must be real-world capture (not synthetic); it is content-hashed for tamper-evidence.
 
-=== stat-test missing --data-source ===
-+ target/release/clms verify 1 --method=stat-test --cmd=echo --exit-code=0 --ref=x
+=== stat-test missing --cmd ===
++ target/release/clms verify 1 --method=stat-test --ref=TMPDIR/stat_ok.json
 exit=1
-Error: stat-test requires --p-value <float>
+Error: stat-test requires --cmd "<shell cmd that produces the local json artifact at --ref>".
+
+=== stat-test artifact missing data_source ===
++ target/release/clms verify 1 --method=stat-test --ref=TMPDIR/stat_missing_ds.json --cmd=true
+exit=1
+executing: true
+Error: stat-test artifact 'TMPDIR/stat_missing_ds.json' is missing string field 'data_source'.
 
 === documented missing --quote ===
 + target/release/clms verify 1 --method=documented --ref=x
@@ -192,4 +207,24 @@ exit=1
 Error: claim #3 requires min_tier=observed (got method 'documented' at tier documented). allowed methods: prop-test | integration-test | replay-test | stat-test | benchmark | estimate | observed.
 
 this claim was stamped with a tier floor at creation time (likely by an orchestrator declaring it a science claim). either supply evidence at or above the floor, or write a different claim if the lower-tier evidence is the actual finding.
+
+=== repair mode: add refused ===
++ env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE=TMPDIR/integrity.key target/release/clms add should refuse
+exit=1
+Error: add: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex or archaeology mutation.
+
+=== repair mode: reindex refused ===
++ env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE=TMPDIR/integrity.key target/release/clms reindex
+exit=1
+Error: reindex: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex or archaeology mutation.
+
+=== integrity: tampered integrity_mac refused ===
++ target/release/clms show 1
+exit=1
+Error: claim #1 integrity_mac mismatch — file has been tampered or the wrong integrity key is in use.
+  stored:     HASH
+  recomputed: HASH
+  path:       TMPDIR/.claims/000001.json
+
+content_hash alone is forgeable. integrity_mac is the authoritative check. set CLAIMS_REPAIR=1 only for forensic read-only recovery.
 

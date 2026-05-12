@@ -27,42 +27,59 @@ EVIDENCE METHODS (each has REQUIRED fields, no soft warnings, exit 1 if missing)
   prop-test         --ref --cmd                       [--exit-code predictive]
   integration-test  --ref --cmd --target <url-or-host> [--exit-code predictive]
   replay-test       --ref --cmd --dataset <path>      [--exit-code predictive]
-  stat-test         --ref --p-value --sample-size --test-type --data-source <real|live>
-                    [--cmd recommended]
+  stat-test         --ref --cmd                       [--test-type --p-value
+                    --sample-size --data-source as optional echo-checks]
+                    --ref must be a LOCAL JSON artifact produced by --cmd.
+                    artifact fields required: test_type, p_value, sample_size,
+                    data_source. if the matching cli flags are supplied, they
+                    must match the artifact exactly.
                     --test-type: closed enum, one of:
                       chi-squared | chi-squared-goodness-of-fit
                       t-test-paired | t-test-unpaired | t-test-one-sample | welch-t
                       anova | kolmogorov-smirnov | mann-whitney-u | wilcoxon-signed-rank
                       shapiro-wilk | anderson-darling | fisher | permutation | likelihood-ratio
-  benchmark         --ref --cmd --metric --metric-value --threshold --sample-size --data-source
+  benchmark         --ref --cmd --threshold          [--metric --metric-value
+                    --sample-size --data-source as optional echo-checks]
+                    --ref must be a LOCAL JSON artifact produced by --cmd.
+                    artifact fields required: metric, metric_value, sample_size,
+                    data_source.
                     --metric: closed enum, direction fixed per variant.
                       higher-better: auc-roc | auc-pr | f1 | precision | recall | accuracy |
                                      balanced-accuracy | mcc | kappa-cohen | r2
                       lower-better:  log-loss | brier | rmse | mae | mape
-                    gate: metric_value >= threshold (higher-better) or <= (lower-better)
+                    gate: artifact.metric_value >= threshold (higher-better)
+                          or <= threshold (lower-better)
                     cmd execution: --cmd is run at verify time. exit_code must be 0.
                     stdout_hash captured for rerun drift detection.
-  estimate          --ref --cmd --estimator --point-value --ci-lower --ci-upper
-                    --confidence-level --sample-size --data-source
+  estimate          --ref --cmd                      [--estimator --point-value
+                    --ci-lower --ci-upper --confidence-level --sample-size
+                    --data-source as optional echo-checks]
+                    --ref must be a LOCAL JSON artifact produced by --cmd.
+                    artifact fields required: estimator, point_value, ci_lower,
+                    ci_upper, confidence_level, sample_size, data_source.
                     --estimator: closed enum, one of:
                       mean | median | geometric-mean | std-dev | std-error | variance
                       skewness | kurtosis | cohens-d | odds-ratio | risk-ratio
                       correlation | spearman-rho
-                    gate: ci_lower <= point_value <= ci_upper AND 0 < confidence_level < 1.
+                    gate: artifact.ci_lower <= artifact.point_value <= artifact.ci_upper
+                          AND 0 < artifact.confidence_level < 1.
                     cmd execution: --cmd is run at verify time. exit_code must be 0.
                     stdout_hash captured for rerun drift detection.
   observed          --ref                              (file | URL | sha256:HEX)
   documented        --ref --quote "<exact text from doc>"
   derived           --from <id> --from <id>            (min 2, each must exist + be verified)
 
-CMD EXECUTION (prop-test, integration-test, replay-test, benchmark, estimate)
+CMD EXECUTION (all empirical methods)
   --cmd is EXECUTED at verify time. clms captures the actual exit_code and
-  hashes stdout. for prop-test / integration-test / replay-test, --exit-code
-  is optional and reinterpreted as the agent's *predicted* exit; a mismatch
-  with the actual value is a hard error. for benchmark and estimate, the
-  cmd is required and must exit 0 (the structural gate is the metric-vs-
-  threshold or point-in-CI check, not the exit code).
-  stat-test executes --cmd if provided (recommended) for drift detection.
+  hashes stdout.
+
+  - prop-test / integration-test / replay-test:
+      --exit-code is optional and reinterpreted as the agent's *predicted*
+      exit. mismatch with actual is a hard error.
+  - stat-test / benchmark / estimate:
+      --cmd is REQUIRED and must exit 0. clms then parses the LOCAL JSON
+      artifact at --ref and treats that artifact as the source of truth.
+      matching cli flags, if present, are only consistency checks.
 
 REF / TARGET SHAPE
   observed --ref must be one of: (a) an existing local file path, (b) a URL
@@ -110,22 +127,18 @@ EXAMPLES
     --dataset ./data/binance_btc_l2_2024-03.parquet \
     --cmd "python3 ./strategies/mm_v3.py --replay ./data/binance_btc_l2_2024-03.parquet"
 
-  # statistical test on real samples
-  clms verify 4 --method stat-test --ref ./test.py \
-    --test-type kolmogorov-smirnov --p-value 0.003 --sample-size 4821 --data-source real \
-    --cmd "python3 ./test.py"
+  # statistical test on real samples (artifact is source of truth)
+  clms verify 4 --method stat-test --ref ./lag_test_artifact.json \
+    --cmd "python3 ./test.py --out ./lag_test_artifact.json"
 
   # benchmark: classifier evaluation against threshold
   clms verify 5 --method benchmark --ref ./eval_output.json \
-    --metric auc-roc --metric-value 0.84 --threshold 0.80 \
-    --sample-size 5000 --data-source real \
-    --cmd "python3 ./eval.py --holdout ./data/test.parquet"
+    --threshold 0.80 \
+    --cmd "python3 ./eval.py --holdout ./data/test.parquet --out ./eval_output.json"
 
   # estimate: mean with 95% CI on real returns
   clms verify 6 --method estimate --ref ./estimator_out.json \
-    --estimator mean --point-value 0.0042 --ci-lower 0.0038 --ci-upper 0.0046 \
-    --confidence-level 0.95 --sample-size 8760 --data-source real \
-    --cmd "python3 ./est.py --series ./data/eth_1h_returns.parquet"
+    --cmd "python3 ./est.py --series ./data/eth_1h_returns.parquet --out ./estimator_out.json"
 
   # documented source
   clms verify 7 --method documented --ref https://docs.poly.com/api/limits \
@@ -173,11 +186,17 @@ ENV VARS (provenance + repair)
                       `clms add`. claims born under this flag are stamped
                       `backfilled: true` and rendered with [backfilled] in
                       human output.
-  CLAIMS_REPAIR=1     disables the content_hash gate in read_claim for
+  CLAIMS_REPAIR=1     disables claim-integrity verification in read_claim for
                       forensic recovery (show / diff-evidence / timeline /
-                      reindex). mutating commands (verify / rerun / refute)
-                      refuse under repair mode — unset it after fixing
-                      records before re-mutating state.
+                      context). ALL mutating commands refuse under repair
+                      mode, including add / verify / rerun / refute / reindex /
+                      archaeology commit+purge.
+  CLAIMS_INTEGRITY_KEY_FILE
+                      path to keyed integrity material. defaults to
+                      ~/.clms/integrity.key and is auto-created on first write.
+  CLAIMS_INTEGRITY_KEY_HEX
+                      32-byte (64 hex chars) integrity key supplied directly
+                      via env. overrides CLAIMS_INTEGRITY_KEY_FILE.
 
 CONFIDENCE
   auto-derived from method. cannot be set manually. add stronger evidence

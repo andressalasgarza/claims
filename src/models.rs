@@ -3,7 +3,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-pub const SCHEMA_VERSION: &str = "1.2";
+pub const SCHEMA_VERSION: &str = "1.3";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -172,6 +172,31 @@ impl BenchmarkMetric {
             "log-loss", "brier", "rmse", "mae", "mape",
         ]
     }
+
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "auc-roc" => Ok(Self::AucRoc),
+            "auc-pr" => Ok(Self::AucPr),
+            "f1" => Ok(Self::F1),
+            "precision" => Ok(Self::Precision),
+            "recall" => Ok(Self::Recall),
+            "accuracy" => Ok(Self::Accuracy),
+            "balanced-accuracy" => Ok(Self::BalancedAccuracy),
+            "mcc" => Ok(Self::Mcc),
+            "kappa-cohen" => Ok(Self::KappaCohen),
+            "r2" => Ok(Self::R2),
+            "log-loss" => Ok(Self::LogLoss),
+            "brier" => Ok(Self::Brier),
+            "rmse" => Ok(Self::Rmse),
+            "mae" => Ok(Self::Mae),
+            "mape" => Ok(Self::Mape),
+            other => Err(anyhow::anyhow!(
+                "invalid benchmark metric '{}' in artifact. valid: {}",
+                other,
+                Self::all_names().join(" | ")
+            )),
+        }
+    }
 }
 
 /// estimators accepted on `estimate --estimator`. each names a statistical
@@ -227,6 +252,29 @@ impl Estimator {
             "cohens-d", "odds-ratio", "risk-ratio",
             "correlation", "spearman-rho",
         ]
+    }
+
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "mean" => Ok(Self::Mean),
+            "median" => Ok(Self::Median),
+            "geometric-mean" => Ok(Self::GeometricMean),
+            "std-dev" => Ok(Self::StdDev),
+            "std-error" => Ok(Self::StdError),
+            "variance" => Ok(Self::Variance),
+            "skewness" => Ok(Self::Skewness),
+            "kurtosis" => Ok(Self::Kurtosis),
+            "cohens-d" => Ok(Self::CohensD),
+            "odds-ratio" => Ok(Self::OddsRatio),
+            "risk-ratio" => Ok(Self::RiskRatio),
+            "correlation" => Ok(Self::Correlation),
+            "spearman-rho" => Ok(Self::SpearmanRho),
+            other => Err(anyhow::anyhow!(
+                "invalid estimator '{}' in artifact. valid: {}",
+                other,
+                Self::all_names().join(" | ")
+            )),
+        }
     }
 }
 
@@ -353,6 +401,31 @@ impl HypothesisTest {
             "likelihood-ratio",
         ]
     }
+
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "chi-squared" => Ok(Self::ChiSquared),
+            "chi-squared-goodness-of-fit" => Ok(Self::ChiSquaredGoodnessOfFit),
+            "t-test-paired" => Ok(Self::TTestPaired),
+            "t-test-unpaired" => Ok(Self::TTestUnpaired),
+            "t-test-one-sample" => Ok(Self::TTestOneSample),
+            "welch-t" => Ok(Self::WelchT),
+            "anova" => Ok(Self::Anova),
+            "kolmogorov-smirnov" => Ok(Self::KolmogorovSmirnov),
+            "mann-whitney-u" => Ok(Self::MannWhitneyU),
+            "wilcoxon-signed-rank" => Ok(Self::WilcoxonSignedRank),
+            "shapiro-wilk" => Ok(Self::ShapiroWilk),
+            "anderson-darling" => Ok(Self::AndersonDarling),
+            "fisher" => Ok(Self::Fisher),
+            "permutation" => Ok(Self::Permutation),
+            "likelihood-ratio" => Ok(Self::LikelihoodRatio),
+            other => Err(anyhow::anyhow!(
+                "invalid hypothesis test '{}' in artifact. valid: {}",
+                other,
+                Self::all_names().join(" | ")
+            )),
+        }
+    }
 }
 
 /// canonical descriptor for an evidence method. **single source of truth.**
@@ -393,7 +466,7 @@ pub const METHODS: &[MethodSpec] = &[
         tier: ConfidenceTier::Empirical,
         runnable: true,
         falsification_surface: "randomized input generator",
-        required_fields: &["ref", "exit_code", "cmd"],
+        required_fields: &["ref", "cmd"],
         exclusive_flag: None,
     },
     MethodSpec {
@@ -402,7 +475,7 @@ pub const METHODS: &[MethodSpec] = &[
         tier: ConfidenceTier::Empirical,
         runnable: true,
         falsification_surface: "real external system the author does not control",
-        required_fields: &["ref", "exit_code", "target", "cmd"],
+        required_fields: &["ref", "target", "cmd"],
         exclusive_flag: Some("target"),
     },
     MethodSpec {
@@ -411,7 +484,7 @@ pub const METHODS: &[MethodSpec] = &[
         tier: ConfidenceTier::Empirical,
         runnable: true,
         falsification_surface: "frozen real-world dataset (synthetic refused)",
-        required_fields: &["ref", "exit_code", "dataset", "dataset_hash", "cmd"],
+        required_fields: &["ref", "dataset", "dataset_hash", "cmd"],
         exclusive_flag: Some("dataset"),
     },
     MethodSpec {
@@ -420,7 +493,10 @@ pub const METHODS: &[MethodSpec] = &[
         tier: ConfidenceTier::Empirical,
         runnable: true,
         falsification_surface: "real or live samples (simulated refused)",
-        required_fields: &["ref", "p_value", "sample_size", "test_type", "data_source"],
+        required_fields: &[
+            "ref(local-json-artifact)", "cmd",
+            "artifact.test_type", "artifact.p_value", "artifact.sample_size", "artifact.data_source",
+        ],
         // data-source is shared with benchmark in 1.2; exclusive_flag's
         // single-owner mechanism cannot express that, so the data-source
         // gate is special-cased in check_exclusive_flags instead.
@@ -433,7 +509,8 @@ pub const METHODS: &[MethodSpec] = &[
         runnable: true,
         falsification_surface: "measured metric on held-out real data vs declared threshold",
         required_fields: &[
-            "ref", "cmd", "metric", "metric_value", "threshold", "sample_size", "data_source",
+            "ref(local-json-artifact)", "cmd", "threshold",
+            "artifact.metric", "artifact.metric_value", "artifact.sample_size", "artifact.data_source",
         ],
         exclusive_flag: Some("metric"),
     },
@@ -444,8 +521,9 @@ pub const METHODS: &[MethodSpec] = &[
         runnable: true,
         falsification_surface: "claimed point falls outside computed CI on replication",
         required_fields: &[
-            "ref", "cmd", "estimator", "point_value", "ci_lower", "ci_upper",
-            "confidence_level", "sample_size", "data_source",
+            "ref(local-json-artifact)", "cmd",
+            "artifact.estimator", "artifact.point_value", "artifact.ci_lower", "artifact.ci_upper",
+            "artifact.confidence_level", "artifact.sample_size", "artifact.data_source",
         ],
         exclusive_flag: Some("estimator"),
     },
@@ -645,6 +723,11 @@ pub struct Claim {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub content_hash: Option<String>,
+    /// keyed message-authentication code (MAC) over the canonical claim bytes.
+    /// unlike content_hash, this is not forgeable by anyone who can merely edit
+    /// the json file; they also need the signing key material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub integrity_mac: Option<String>,
     /// archaeology v2 backfill metadata. only populated for claims born from
     /// `clms archaeology commit`. additive, non-breaking — existing claim files
     /// without this field deserialize to None and re-serialize without the key.

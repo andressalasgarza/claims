@@ -6,15 +6,146 @@ use std::path::{Path, PathBuf};
 
 pub const STORE_DIR: &str = ".claims";
 pub const INDEX_FILE: &str = "index.db";
+const INTEGRITY_STRICT_MARKER: &str = ".integrity.strict";
+const DEFAULT_INTEGRITY_KEY_DIR: &str = ".clms";
+const DEFAULT_INTEGRITY_KEY_FILE: &str = "integrity.key";
 
-/// canonical content hash: serialize the claim with content_hash blanked,
-/// then blake3. write side captures it; read side recomputes and compares.
-fn canonical_content_hash(claim: &Claim) -> String {
+fn canonical_claim_bytes(claim: &Claim) -> Vec<u8> {
     let mut to_serialize = claim.clone();
     to_serialize.content_hash = None;
-    let canonical = serde_json::to_string(&to_serialize)
-        .expect("Claim serializes (Serialize is derived)");
-    blake3::hash(canonical.as_bytes()).to_hex().to_string()
+    to_serialize.integrity_mac = None;
+    serde_json::to_vec(&to_serialize)
+        .expect("Claim serializes (Serialize is derived)")
+}
+
+/// canonical content hash: serialize the claim with integrity fields blanked,
+/// then blake3. this remains a cheap public fingerprint for diagnostics and
+/// drift reporting, but it is NOT the authority for tamper-resistance.
+fn canonical_content_hash(claim: &Claim) -> String {
+    blake3::hash(&canonical_claim_bytes(claim)).to_hex().to_string()
+}
+
+/// keyed MAC over the canonical claim bytes. unlike content_hash, this cannot
+/// be forged by someone who can merely edit the json file; they also need the
+/// signing key material.
+fn canonical_integrity_mac(claim: &Claim, key: &[u8; 32]) -> String {
+    blake3::keyed_hash(key, &canonical_claim_bytes(claim))
+        .to_hex()
+        .to_string()
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn decode_hex_32(s: &str, label: &str) -> Result<[u8; 32]> {
+    let hex = s.trim();
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(anyhow!(
+            "{} must be exactly 64 hex chars (32 bytes)",
+            label
+        ));
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| anyhow!("{} contains invalid hex", label))?;
+    }
+    Ok(out)
+}
+
+fn default_integrity_key_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").ok_or_else(|| {
+        anyhow!(
+            "cannot locate HOME for default integrity key path. set CLAIMS_INTEGRITY_KEY_FILE or CLAIMS_INTEGRITY_KEY_HEX."
+        )
+    })?;
+    Ok(PathBuf::from(home)
+        .join(DEFAULT_INTEGRITY_KEY_DIR)
+        .join(DEFAULT_INTEGRITY_KEY_FILE))
+}
+
+fn integrity_key_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("CLAIMS_INTEGRITY_KEY_FILE") {
+        return Ok(PathBuf::from(path));
+    }
+    default_integrity_key_path()
+}
+
+fn load_integrity_key() -> Result<[u8; 32]> {
+    if let Ok(hex) = std::env::var("CLAIMS_INTEGRITY_KEY_HEX") {
+        return decode_hex_32(&hex, "CLAIMS_INTEGRITY_KEY_HEX");
+    }
+    let path = integrity_key_path()?;
+    let raw = fs::read_to_string(&path)
+        .with_context(|| format!("read integrity key {}", path.display()))?;
+    decode_hex_32(&raw, &format!("integrity key file {}", path.display()))
+}
+
+fn load_or_create_integrity_key() -> Result<[u8; 32]> {
+    if let Ok(hex) = std::env::var("CLAIMS_INTEGRITY_KEY_HEX") {
+        return decode_hex_32(&hex, "CLAIMS_INTEGRITY_KEY_HEX");
+    }
+    let path = integrity_key_path()?;
+    if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("read integrity key {}", path.display()))?;
+        return decode_hex_32(&raw, &format!("integrity key file {}", path.display()));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create integrity key dir {}", parent.display()))?;
+    }
+    let mut key = [0u8; 32];
+    getrandom::getrandom(&mut key).map_err(|e| anyhow!("generate integrity key: {}", e))?;
+    fs::write(&path, format!("{}\n", encode_hex(&key)))
+        .with_context(|| format!("write integrity key {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 600 {}", path.display()))?;
+    }
+    Ok(key)
+}
+
+fn integrity_strict_marker_path(root: &Path) -> PathBuf {
+    root.join(INTEGRITY_STRICT_MARKER)
+}
+
+fn integrity_strict_mode(root: &Path) -> bool {
+    integrity_strict_marker_path(root).exists()
+}
+
+fn maybe_enable_integrity_strict_mode(root: &Path) -> Result<()> {
+    if integrity_strict_mode(root) {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path)?;
+        let claim: Claim = serde_json::from_str(&raw)
+            .with_context(|| format!("parse {} while checking strict-integrity readiness", path.display()))?;
+        if claim.integrity_mac.is_none() {
+            return Ok(());
+        }
+    }
+    fs::write(integrity_strict_marker_path(root), "strict\n")
+        .context("write strict-integrity marker")?;
+    Ok(())
+}
+
+fn claim_seq_from_path(path: &Path) -> Result<u64> {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow!("unexpected claim filename {}", path.display()))?;
+    stem.parse::<u64>()
+        .map_err(|_| anyhow!("unexpected claim filename {}", path.display()))
 }
 
 pub struct Store {
@@ -41,14 +172,16 @@ impl Store {
     }
 
     pub fn write_claim(&mut self, claim: &mut Claim) -> Result<()> {
-        let hash = canonical_content_hash(claim);
-        claim.content_hash = Some(hash);
+        let key = load_or_create_integrity_key()?;
+        claim.content_hash = Some(canonical_content_hash(claim));
+        claim.integrity_mac = Some(canonical_integrity_mac(claim, &key));
 
         let path = self.claim_path(claim.seq);
         let pretty = serde_json::to_string_pretty(claim)?;
         fs::write(&path, pretty).with_context(|| format!("write {}", path.display()))?;
 
         self.index_claim(claim)?;
+        maybe_enable_integrity_strict_mode(&self.root)?;
         Ok(())
     }
 
@@ -56,19 +189,33 @@ impl Store {
         self.root.join(format!("{:06}.json", seq))
     }
 
-    /// read a claim from disk and verify its content_hash matches the canonical
-    /// blake3 of its serialized form (with content_hash blanked). hard error on
-    /// mismatch or missing hash. without this check, a hand-written
-    /// .claims/*.json with state=verified, agent=anyone, content_hash=fake passes
-    /// `clms reindex` and shows up in `clms show` as legitimate.
+    /// read a claim from disk and verify both integrity layers:
+    ///   1. content_hash: public fingerprint over canonical bytes (diagnostic)
+    ///   2. integrity_mac: keyed MAC over the same bytes (authoritative)
+    ///
+    /// legacy ledgers may have only content_hash until they are migrated via
+    /// `clms reindex`. once every file carries integrity_mac, strict mode is
+    /// enabled and hash-only claims are refused.
     pub fn read_claim(&self, seq: u64) -> Result<Claim> {
         let path = self.claim_path(seq);
         let raw = fs::read_to_string(&path)
             .with_context(|| format!("claim #{} not found at {}", seq, path.display()))?;
         let c: Claim = serde_json::from_str(&raw)?;
+        let repair = std::env::var("CLAIMS_REPAIR").is_ok();
+        if c.seq != seq {
+            if repair {
+                return Ok(c);
+            }
+            return Err(anyhow!(
+                "claim file {} declares seq={} but was loaded as #{}. filename and payload must agree.",
+                path.display(),
+                c.seq,
+                seq,
+            ));
+        }
         match c.content_hash.as_deref() {
             None => {
-                if std::env::var("CLAIMS_REPAIR").is_ok() {
+                if repair {
                     return Ok(c);
                 }
                 return Err(anyhow!(
@@ -81,7 +228,7 @@ or it predates the integrity field. set CLAIMS_REPAIR=1 to read anyway, then re-
             Some(stored) => {
                 let recomputed = canonical_content_hash(&c);
                 if stored != recomputed {
-                    if std::env::var("CLAIMS_REPAIR").is_ok() {
+                    if repair {
                         return Ok(c);
                     }
                     return Err(anyhow!(
@@ -90,6 +237,49 @@ set CLAIMS_REPAIR=1 to read anyway (use only if you accept the tampered content)
                         seq,
                         &stored[..16.min(stored.len())],
                         &recomputed[..16],
+                        path.display(),
+                    ));
+                }
+            }
+        }
+        match c.integrity_mac.as_deref() {
+            Some(stored) => {
+                let key = match load_integrity_key() {
+                    Ok(key) => key,
+                    Err(err) => {
+                        if repair {
+                            return Ok(c);
+                        }
+                        return Err(anyhow!(
+                            "claim #{} at {} carries integrity_mac, but the verification key is unavailable: {}. set CLAIMS_REPAIR=1 for forensic read-only access, or restore the key before using this ledger.",
+                            seq,
+                            path.display(),
+                            err,
+                        ));
+                    }
+                };
+                let recomputed = canonical_integrity_mac(&c, &key);
+                if stored != recomputed {
+                    if repair {
+                        return Ok(c);
+                    }
+                    return Err(anyhow!(
+                        "claim #{} integrity_mac mismatch — file has been tampered or the wrong integrity key is in use.\n  stored:     {}\n  recomputed: {}\n  path:       {}\n\ncontent_hash alone is forgeable. integrity_mac is the authoritative check. set CLAIMS_REPAIR=1 only for forensic read-only recovery.",
+                        seq,
+                        &stored[..16.min(stored.len())],
+                        &recomputed[..16],
+                        path.display(),
+                    ));
+                }
+            }
+            None => {
+                if integrity_strict_mode(&self.root) {
+                    if repair {
+                        return Ok(c);
+                    }
+                    return Err(anyhow!(
+                        "claim #{} at {} has no integrity_mac, but this ledger is in strict integrity mode. migrate legacy hash-only claims with `clms reindex`, or set CLAIMS_REPAIR=1 for forensic read-only access.",
+                        seq,
                         path.display(),
                     ));
                 }
@@ -182,21 +372,25 @@ set CLAIMS_REPAIR=1 to read anyway (use only if you accept the tampered content)
     }
 
     pub fn reindex_all(&mut self) -> Result<usize> {
-        self.conn.execute_batch(
-            "DELETE FROM edges; DELETE FROM claims;",
-        )?;
-        let mut count = 0;
+        let mut claims = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let raw = fs::read_to_string(&path)?;
-            let c: Claim = serde_json::from_str(&raw)?;
-            self.index_claim(&c)?;
+            let seq = claim_seq_from_path(&path)?;
+            claims.push(self.read_claim(seq)?);
+        }
+        claims.sort_by_key(|c| c.seq);
+
+        self.conn.execute_batch("DELETE FROM edges; DELETE FROM claims;")?;
+        let mut count = 0;
+        for mut claim in claims {
+            self.write_claim(&mut claim)?;
             count += 1;
         }
+        maybe_enable_integrity_strict_mode(&self.root)?;
         Ok(count)
     }
 }
@@ -284,21 +478,26 @@ fn validate_replay_test(ev: &Evidence) -> Result<()> {
 
 fn validate_benchmark(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
-        return Err(anyhow!("benchmark requires --ref <path-to-eval-output>"));
+        return Err(anyhow!("benchmark requires --ref <path-to-local-json-artifact>"));
+    }
+    if ev.ref_hash.is_none() {
+        return Err(anyhow!(
+            "benchmark requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted."
+        ));
     }
     if missing_str(&ev.cmd) {
         return Err(anyhow!(
-            "benchmark requires --cmd \"<shell cmd that runs the eval and prints the metric>\". the cmd is executed at verify time and the captured stdout is hashed for drift detection."
+            "benchmark requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time, hashes stdout, then parses metric/sample metadata from the artifact instead of trusting cli flags."
         ));
     }
     let metric = ev.metric.ok_or_else(|| {
         anyhow!(
-            "benchmark requires --metric <name>. valid: auc-roc | auc-pr | f1 | precision | recall | accuracy | balanced-accuracy | mcc | kappa-cohen | r2 | log-loss | brier | rmse | mae | mape."
+            "benchmark artifact missing 'metric'. valid: auc-roc | auc-pr | f1 | precision | recall | accuracy | balanced-accuracy | mcc | kappa-cohen | r2 | log-loss | brier | rmse | mae | mape."
         )
     })?;
     let v = ev
         .metric_value
-        .ok_or_else(|| anyhow!("benchmark requires --metric-value <float>"))?;
+        .ok_or_else(|| anyhow!("benchmark artifact missing 'metric_value'"))?;
     if !v.is_finite() {
         return Err(anyhow!(
             "benchmark --metric-value must be finite (got {}). NaN/inf are not measurable values.",
@@ -316,7 +515,7 @@ fn validate_benchmark(ev: &Evidence) -> Result<()> {
     }
     let n = ev
         .sample_size
-        .ok_or_else(|| anyhow!("benchmark requires --sample-size <int>"))?;
+        .ok_or_else(|| anyhow!("benchmark artifact missing 'sample_size'"))?;
     if n < 2 {
         return Err(anyhow!(
             "benchmark --sample-size must be >= 2 (got {}). a metric computed on one sample is not measurable evidence.",
@@ -325,7 +524,7 @@ fn validate_benchmark(ev: &Evidence) -> Result<()> {
     }
     if ev.data_source.is_none() {
         return Err(anyhow!(
-            "benchmark requires --data-source <real|live>. synthetic eval sets cannot falsify a claim about real-world performance."
+            "benchmark artifact missing 'data_source' (expected real|live). synthetic eval sets cannot falsify a claim about real-world performance."
         ));
     }
     // direction check: enforce metric_value passes threshold per metric direction.
@@ -351,21 +550,26 @@ fn validate_benchmark(ev: &Evidence) -> Result<()> {
 
 fn validate_estimate(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
-        return Err(anyhow!("estimate requires --ref <path-to-output>"));
+        return Err(anyhow!("estimate requires --ref <path-to-local-json-artifact>"));
+    }
+    if ev.ref_hash.is_none() {
+        return Err(anyhow!(
+            "estimate requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted."
+        ));
     }
     if missing_str(&ev.cmd) {
         return Err(anyhow!(
-            "estimate requires --cmd \"<shell cmd that computes the estimator>\". the cmd is executed at verify time and the captured stdout is hashed for drift detection."
+            "estimate requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time, hashes stdout, then parses estimator/ci metadata from the artifact instead of trusting cli flags."
         ));
     }
     if ev.estimator.is_none() {
         return Err(anyhow!(
-            "estimate requires --estimator <name>. valid: mean | median | geometric-mean | std-dev | std-error | variance | skewness | kurtosis | cohens-d | odds-ratio | risk-ratio | correlation | spearman-rho."
+            "estimate artifact missing 'estimator'. valid: mean | median | geometric-mean | std-dev | std-error | variance | skewness | kurtosis | cohens-d | odds-ratio | risk-ratio | correlation | spearman-rho."
         ));
     }
     let point = ev
         .point_value
-        .ok_or_else(|| anyhow!("estimate requires --point-value <float>"))?;
+        .ok_or_else(|| anyhow!("estimate artifact missing 'point_value'"))?;
     if !point.is_finite() {
         return Err(anyhow!(
             "estimate --point-value must be finite (got {}). NaN/inf are not measurable values.",
@@ -374,10 +578,10 @@ fn validate_estimate(ev: &Evidence) -> Result<()> {
     }
     let lo = ev
         .ci_lower
-        .ok_or_else(|| anyhow!("estimate requires --ci-lower <float>"))?;
+        .ok_or_else(|| anyhow!("estimate artifact missing 'ci_lower'"))?;
     let hi = ev
         .ci_upper
-        .ok_or_else(|| anyhow!("estimate requires --ci-upper <float>"))?;
+        .ok_or_else(|| anyhow!("estimate artifact missing 'ci_upper'"))?;
     if !lo.is_finite() || !hi.is_finite() {
         return Err(anyhow!(
             "estimate CI bounds must be finite (got ci_lower={}, ci_upper={}).",
@@ -398,7 +602,7 @@ fn validate_estimate(ev: &Evidence) -> Result<()> {
     }
     let conf = ev
         .confidence_level
-        .ok_or_else(|| anyhow!("estimate requires --confidence-level <float in (0, 1)>, e.g. 0.95"))?;
+        .ok_or_else(|| anyhow!("estimate artifact missing 'confidence_level'"))?;
     if !conf.is_finite() || conf <= 0.0 || conf >= 1.0 {
         return Err(anyhow!(
             "estimate --confidence-level must be in (0, 1) (got {}). typical values: 0.90, 0.95, 0.99.",
@@ -407,7 +611,7 @@ fn validate_estimate(ev: &Evidence) -> Result<()> {
     }
     let n = ev
         .sample_size
-        .ok_or_else(|| anyhow!("estimate requires --sample-size <int>"))?;
+        .ok_or_else(|| anyhow!("estimate artifact missing 'sample_size'"))?;
     if n < 2 {
         return Err(anyhow!(
             "estimate --sample-size must be >= 2 (got {}). a CI from a single sample is not measurable.",
@@ -416,7 +620,7 @@ fn validate_estimate(ev: &Evidence) -> Result<()> {
     }
     if ev.data_source.is_none() {
         return Err(anyhow!(
-            "estimate requires --data-source <real|live>. estimators on synthetic data only describe the simulator (circular)."
+            "estimate artifact missing 'data_source' (expected real|live). estimators on synthetic data only describe the simulator (circular)."
         ));
     }
     Ok(())
@@ -424,9 +628,19 @@ fn validate_estimate(ev: &Evidence) -> Result<()> {
 
 fn validate_stat_test(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
-        return Err(anyhow!("stat-test requires --ref <path>"));
+        return Err(anyhow!("stat-test requires --ref <path-to-local-json-artifact>"));
     }
-    let p = ev.p_value.ok_or_else(|| anyhow!("stat-test requires --p-value <float>"))?;
+    if ev.ref_hash.is_none() {
+        return Err(anyhow!(
+            "stat-test requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted."
+        ));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!(
+            "stat-test requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time and parses p_value/sample metadata from the artifact instead of trusting cli flags."
+        ));
+    }
+    let p = ev.p_value.ok_or_else(|| anyhow!("stat-test artifact missing 'p_value'"))?;
     if !(0.0..=1.0).contains(&p) || p.is_nan() {
         return Err(anyhow!(
             "stat-test --p-value must be in [0.0, 1.0] (got {}). a p-value is a probability — outside that range it is not a p-value.",
@@ -435,7 +649,7 @@ fn validate_stat_test(ev: &Evidence) -> Result<()> {
     }
     let n = ev
         .sample_size
-        .ok_or_else(|| anyhow!("stat-test requires --sample-size <int>"))?;
+        .ok_or_else(|| anyhow!("stat-test artifact missing 'sample_size'"))?;
     if n < 2 {
         return Err(anyhow!(
             "stat-test --sample-size must be >= 2 (got {}). a single sample (or zero) cannot falsify a distributional claim.",
@@ -444,12 +658,12 @@ fn validate_stat_test(ev: &Evidence) -> Result<()> {
     }
     if ev.test_type.is_none() {
         return Err(anyhow!(
-            "stat-test requires --test-type <name> (e.g. ks, t, chi2)"
+            "stat-test artifact missing 'test_type'"
         ));
     }
     if ev.data_source.is_none() {
         return Err(anyhow!(
-            "stat-test requires --data-source <real|live>. simulated/synthetic data is refused: it cannot falsify a claim about reality."
+            "stat-test artifact missing 'data_source' (expected real|live). simulated/synthetic data is refused: it cannot falsify a claim about reality."
         ));
     }
     Ok(())

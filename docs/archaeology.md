@@ -506,8 +506,9 @@ clms verify <id> --method prop-test --cmd "<suggested_evidence cmd>" \
 # --cmd is executed at verify; actual exit_code captured. omit --exit-code
 # or pass it as a *predicted* value (mismatch with actual → hard error).
 # or integration-test --target <url> / replay-test --dataset <path> /
-# stat-test --data-source real / benchmark --metric --metric-value --threshold /
-# estimate --estimator --point-value --ci-lower --ci-upper --confidence-level
+# stat-test --ref <local-artifact.json> --cmd '<... --out <ref>>' /
+# benchmark --ref <local-artifact.json> --cmd '<... --out <ref>>' --threshold /
+# estimate --ref <local-artifact.json> --cmd '<... --out <ref>>'
 ```
 
 ## test plan

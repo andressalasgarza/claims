@@ -22,18 +22,56 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLMS="${CLMS:-$REPO_ROOT/target/release/clms}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+export CLAIMS_INTEGRITY_KEY_FILE="$TMP/integrity.key"
+printf '%s\n' '1111111111111111111111111111111111111111111111111111111111111111' > "$CLAIMS_INTEGRITY_KEY_FILE"
 
 # fixture: one pending claim we can try to verify
 cd "$TMP"
 "$CLMS" add "fixture claim for golden error tests" > /dev/null 2>&1
 CLAIM_ID=$("$CLMS" timeline 2>/dev/null | awk '{print $1}' | head -1 | tr -d '#')
 
+cat > "$TMP/stat_ok.json" <<'JSON'
+{"test_type":"kolmogorov-smirnov","p_value":0.003,"sample_size":4821,"data_source":"real"}
+JSON
+cat > "$TMP/stat_missing_ds.json" <<'JSON'
+{"test_type":"kolmogorov-smirnov","p_value":0.003,"sample_size":4821}
+JSON
+cat > "$TMP/bench_low.json" <<'JSON'
+{"metric":"auc-roc","metric_value":0.6,"sample_size":1000,"data_source":"real"}
+JSON
+cat > "$TMP/bench_high_rmse.json" <<'JSON'
+{"metric":"rmse","metric_value":0.9,"sample_size":1000,"data_source":"real"}
+JSON
+cat > "$TMP/bench_non_numeric.json" <<'JSON'
+{"metric":"f1","metric_value":"NaN","sample_size":100,"data_source":"real"}
+JSON
+cat > "$TMP/bench_ok.json" <<'JSON'
+{"metric":"f1","metric_value":0.8,"sample_size":100,"data_source":"real"}
+JSON
+cat > "$TMP/est_point_out.json" <<'JSON'
+{"estimator":"mean","point_value":2.0,"ci_lower":0.9,"ci_upper":1.1,"confidence_level":0.95,"sample_size":100,"data_source":"real"}
+JSON
+cat > "$TMP/est_inverted_ci.json" <<'JSON'
+{"estimator":"mean","point_value":1.0,"ci_lower":1.5,"ci_upper":0.5,"confidence_level":0.95,"sample_size":100,"data_source":"real"}
+JSON
+cat > "$TMP/est_conf_high.json" <<'JSON'
+{"estimator":"mean","point_value":1.0,"ci_lower":0.9,"ci_upper":1.1,"confidence_level":1.5,"sample_size":100,"data_source":"real"}
+JSON
+cat > "$TMP/est_conf_zero.json" <<'JSON'
+{"estimator":"mean","point_value":1.0,"ci_lower":0.9,"ci_upper":1.1,"confidence_level":0,"sample_size":100,"data_source":"real"}
+JSON
+cat > "$TMP/est_non_numeric_point.json" <<'JSON'
+{"estimator":"mean","point_value":"Infinity","ci_lower":0.9,"ci_upper":1.1,"confidence_level":0.95,"sample_size":100,"data_source":"real"}
+JSON
+
 # normalize paths so the golden output is reproducible across runs and machines.
 # - strip REPO_ROOT so the clms binary shows up as 'target/release/clms'
 # - collapse mktemp tempdirs (macOS /var/folders/... and linux /tmp/...) to TMPDIR
 normalize() {
-  sed -e "s|$REPO_ROOT/||g" -e "s|$TMP|TMPDIR|g" \
-      -e 's|/var/folders/[A-Za-z0-9_/+]*/T/tmp\.[A-Za-z0-9]*|TMPDIR|g'
+  sed -e "s|$REPO_ROOT/||g" -e "s|/private$TMP|TMPDIR|g" -e "s|$TMP|TMPDIR|g" \
+      -e 's|/var/folders/[A-Za-z0-9_/+]*/T/tmp\.[A-Za-z0-9]*|TMPDIR|g' \
+      -e 's|\(stored:     \)[0-9a-f][0-9a-f]*|\1HASH|g' \
+      -e 's|\(recomputed: \)[0-9a-f][0-9a-f]*|\1HASH|g'
 }
 
 run_case() {
@@ -93,19 +131,19 @@ run_case "benchmark: unknown metric 'NDCG'" \
 
 # higher-better metric: value below threshold refused
 run_case "benchmark: AUC 0.6 below threshold 0.8 (higher-better)" \
-  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=auc-roc --metric-value=0.6 --threshold=0.8 --sample-size=1000 --data-source=real --cmd="echo"
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="$TMP/bench_low.json" --threshold=0.8 --cmd="true"
 
 # lower-better metric: value above threshold refused
 run_case "benchmark: RMSE 0.9 above threshold 0.3 (lower-better)" \
-  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=rmse --metric-value=0.9 --threshold=0.3 --sample-size=1000 --data-source=real --cmd="echo"
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="$TMP/bench_high_rmse.json" --threshold=0.3 --cmd="true"
 
 # non-finite metric_value
-run_case "benchmark: metric_value NaN" \
-  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=f1 --metric-value=NaN --threshold=0.5 --sample-size=100 --data-source=real --cmd="echo"
+run_case "benchmark: metric_value not numeric in artifact" \
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="$TMP/bench_non_numeric.json" --threshold=0.5 --cmd="true"
 
 # missing --threshold
 run_case "benchmark: missing --threshold" \
-  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="x" --metric=f1 --metric-value=0.8 --sample-size=100 --data-source=real --cmd="echo"
+  "$CLMS" verify "$CLAIM_ID" --method=benchmark --ref="$TMP/bench_ok.json" --cmd="true"
 
 # --metric on prop-test (exclusive-flag violation)
 run_case "benchmark: --metric on prop-test" \
@@ -118,23 +156,23 @@ run_case "estimate: unknown estimator 'GaussianMode'" \
 
 # point outside CI
 run_case "estimate: point outside CI" \
-  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=2.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd="echo"
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="$TMP/est_point_out.json" --cmd="true"
 
 # ci_lower > ci_upper
 run_case "estimate: ci_lower > ci_upper" \
-  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=1.0 --ci-lower=1.5 --ci-upper=0.5 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd="echo"
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="$TMP/est_inverted_ci.json" --cmd="true"
 
 # confidence_level out of range
 run_case "estimate: confidence_level=1.5 (out of range)" \
-  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=1.5 --sample-size=100 --data-source=real --cmd="echo"
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="$TMP/est_conf_high.json" --cmd="true"
 
 # confidence_level=0 (boundary)
 run_case "estimate: confidence_level=0 (boundary)" \
-  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=1.0 --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0 --sample-size=100 --data-source=real --cmd="echo"
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="$TMP/est_conf_zero.json" --cmd="true"
 
 # non-finite point
-run_case "estimate: point_value Inf" \
-  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="x" --estimator=mean --point-value=Infinity --ci-lower=0.9 --ci-upper=1.1 --confidence-level=0.95 --sample-size=100 --data-source=real --cmd="echo"
+run_case "estimate: point_value not numeric in artifact" \
+  "$CLMS" verify "$CLAIM_ID" --method=estimate --ref="$TMP/est_non_numeric_point.json" --cmd="true"
 
 # --estimator on observed (exclusive-flag violation)
 run_case "estimate: --estimator on observed" \
@@ -150,8 +188,11 @@ run_case "integration-test missing --target" \
 run_case "replay-test missing --dataset" \
   "$CLMS" verify "$CLAIM_ID" --method=replay-test --cmd="echo" --exit-code=0 --ref="x"
 
-run_case "stat-test missing --data-source" \
-  "$CLMS" verify "$CLAIM_ID" --method=stat-test --cmd="echo" --exit-code=0 --ref="x"
+run_case "stat-test missing --cmd" \
+  "$CLMS" verify "$CLAIM_ID" --method=stat-test --ref="$TMP/stat_ok.json"
+
+run_case "stat-test artifact missing data_source" \
+  "$CLMS" verify "$CLAIM_ID" --method=stat-test --ref="$TMP/stat_missing_ds.json" --cmd="true"
 
 run_case "documented missing --quote" \
   "$CLMS" verify "$CLAIM_ID" --method=documented --ref="x"
@@ -190,3 +231,23 @@ OBS_TIER_ID=$(new_seq)
 
 run_case "min_tier: refuse documented against observed floor" \
   "$CLMS" verify "$OBS_TIER_ID" --method=documented --ref="https://docs.example.com" --quote="text"
+
+# --- repair mode is truly read-only ---
+run_case "repair mode: add refused" \
+  env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE="$CLAIMS_INTEGRITY_KEY_FILE" "$CLMS" add "should refuse"
+
+run_case "repair mode: reindex refused" \
+  env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE="$CLAIMS_INTEGRITY_KEY_FILE" "$CLMS" reindex
+
+# tamper only the keyed MAC: content_hash still verifies, so read_claim must
+# fail on integrity_mac specifically.
+python3 - <<'PY'
+import json
+p = '.claims/000001.json'
+obj = json.load(open(p))
+obj['integrity_mac'] = '0' * 64
+open(p, 'w').write(json.dumps(obj, indent=2) + '\n')
+PY
+
+run_case "integrity: tampered integrity_mac refused" \
+  "$CLMS" show 1

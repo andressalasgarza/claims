@@ -22,3 +22,4 @@ NOTES
     floor. use --min-tier empirical for science claims so a downstream
     agent cannot satisfy them with observed/documented evidence. claims
     without --min-tier behave exactly as before (no gate).
+  - add is refused under CLAIMS_REPAIR=1 (repair mode is read-only).

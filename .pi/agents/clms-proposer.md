@@ -24,16 +24,17 @@ clms now executes commands and validates input shapes structurally. a
 proposal that suggests evidence the binary will refuse is wasted work.
 before suggesting `suggested_evidence`, sanity-check against these rules:
 
-- **--cmd is executed at verify time for every empirical method that
-  takes one** (prop-test, integration-test, replay-test, stat-test,
-  benchmark, estimate). the agent does not pass `--exit-code` as truth;
-  clms runs the cmd itself and captures the actual exit + stdout_hash.
-  for prop / integration / replay, `--exit-code` is *optional* and
-  reinterpreted as a *predicted* value (mismatch = hard error). for
-  benchmark and estimate, the cmd is required and must exit 0; the gate
-  signal is structural (metric vs threshold, point inside CI) not exit
-  code. suggest cmds that are reproducible from the repo root in CI —
-  cmds depending on local-only state will not survive.
+- **--cmd is executed at verify time for every empirical method**
+  (prop-test, integration-test, replay-test, stat-test, benchmark,
+  estimate). the agent does not pass `--exit-code` as truth; clms runs
+  the cmd itself and captures the actual exit + stdout_hash. for prop /
+  integration / replay, `--exit-code` is *optional* and reinterpreted as
+  a *predicted* value (mismatch = hard error). for stat-test /
+  benchmark / estimate, the cmd is required, must exit 0, and must
+  produce a LOCAL JSON artifact at `--ref`; clms parses the measured
+  values from that artifact instead of trusting cli flags. suggest cmds
+  that are reproducible from the repo root in CI — cmds depending on
+  local-only state will not survive.
 
 - **integration-test --target must be a real external system.** loopback
   (localhost / 127.x / ::1), RFC1918 (10.x / 192.168.x / 172.16-31.x),
@@ -52,33 +53,41 @@ before suggesting `suggested_evidence`, sanity-check against these rules:
   bytes will hash fine but a reviewer will not believe them — propose
   datasets that point at real-world captures with provenance.
 
-- **stat-test requires p ∈ [0.0, 1.0] and sample_size ≥ 2,** with
-  `--data-source real | live`. simulated data is refused at parse time.
-  `--test-type` is a **closed enum** (schema 1.2): chi-squared,
-  chi-squared-goodness-of-fit, t-test-paired, t-test-unpaired,
-  t-test-one-sample, welch-t, anova, kolmogorov-smirnov, mann-whitney-u,
-  wilcoxon-signed-rank, shapiro-wilk, anderson-darling, fisher,
-  permutation, likelihood-ratio. agent-typed strings like `AUC` or
-  `my-test` are refused at parse time.
+- **stat-test is artifact-driven.** `--ref` must be a LOCAL JSON artifact
+  produced by `--cmd`; clms parses `test_type`, `p_value`, `sample_size`,
+  and `data_source` from that artifact instead of trusting chat-typed
+  numbers. p must be in [0.0, 1.0], sample_size ≥ 2, data_source must be
+  `real | live`. `--test-type` is a **closed enum** (schema 1.3):
+  chi-squared, chi-squared-goodness-of-fit, t-test-paired,
+  t-test-unpaired, t-test-one-sample, welch-t, anova,
+  kolmogorov-smirnov, mann-whitney-u, wilcoxon-signed-rank,
+  shapiro-wilk, anderson-darling, fisher, permutation,
+  likelihood-ratio. agent-typed strings like `AUC` or `my-test` are
+  refused at parse time.
 
-- **benchmark (new in 1.2) for classifier/regression metrics.** requires
-  `--metric` (closed enum: auc-roc, auc-pr, f1, precision, recall,
-  accuracy, balanced-accuracy, mcc, kappa-cohen, r2 = higher-better;
-  log-loss, brier, rmse, mae, mape = lower-better), `--metric-value`,
-  `--threshold`, `--sample-size`, `--data-source`, `--cmd`. clms enforces
-  direction: metric_value must be ≥ threshold for higher-better metrics
-  or ≤ threshold for lower-better. miss = state stays pending. propose
+- **benchmark (new in 1.2, artifact-driven in 1.3) for classifier/
+  regression metrics.** `--ref` must be a LOCAL JSON artifact produced by
+  `--cmd`; clms parses `metric`, `metric_value`, `sample_size`, and
+  `data_source` from that artifact instead of trusting chat-typed
+  numbers. `--threshold` remains a cli-side claim threshold. `--metric`
+  is a closed enum: auc-roc, auc-pr, f1, precision, recall, accuracy,
+  balanced-accuracy, mcc, kappa-cohen, r2 = higher-better; log-loss,
+  brier, rmse, mae, mape = lower-better. clms enforces direction:
+  metric_value must be ≥ threshold for higher-better metrics or ≤
+  threshold for lower-better. miss = state stays pending. propose
   benchmark for claims like "model X beats baseline Y by Z on metric M".
 
-- **estimate (new in 1.2) for point estimates with CIs.** requires
-  `--estimator` (closed enum: mean, median, geometric-mean, std-dev,
-  std-error, variance, skewness, kurtosis, cohens-d, odds-ratio,
-  risk-ratio, correlation, spearman-rho), `--point-value`, `--ci-lower`,
-  `--ci-upper`, `--confidence-level` (in (0, 1)), `--sample-size`,
-  `--data-source`, `--cmd`. clms enforces shape: ci_lower ≤ point_value ≤
-  ci_upper. propose estimate for claims like "the 95% CI on µ contains 0"
-  or "skewness lies in [a, b] at 95% conf". DO NOT use stat-test for
-  these — stat-test wants a p-value, not a CI.
+- **estimate (new in 1.2, artifact-driven in 1.3) for point estimates with
+  CIs.** `--ref` must be a LOCAL JSON artifact produced by `--cmd`; clms
+  parses `estimator`, `point_value`, `ci_lower`, `ci_upper`,
+  `confidence_level`, `sample_size`, and `data_source` from that artifact
+  instead of trusting chat-typed numbers. `--estimator` is a closed enum:
+  mean, median, geometric-mean, std-dev, std-error, variance, skewness,
+  kurtosis, cohens-d, odds-ratio, risk-ratio, correlation,
+  spearman-rho. clms enforces shape: ci_lower ≤ point_value ≤ ci_upper.
+  propose estimate for claims like "the 95% CI on µ contains 0" or
+  "skewness lies in [a, b] at 95% conf". DO NOT use stat-test for these
+  — stat-test wants a p-value, not a CI.
 
 - **respect min_tier on the target claim.** if the claim was created with
   `--min-tier empirical`, your `suggested_evidence` row MUST pick one of
@@ -100,11 +109,12 @@ before suggesting `suggested_evidence`, sanity-check against these rules:
   hash) is refused. mutating refs or datasets between verifies requires
   explicit `--acknowledge-drift`.
 
-- **the schema is 1.2 (clms cli 2.1).** `unit-test`, `code-test`, and
+- **the schema is 1.3 (clms cli 2.1).** `unit-test`, `code-test`, and
   `sim-test` methods are refused at parse time — see the falsifiability
   rules below for why. 1.2 added `benchmark`, `estimate`, the
   `HypothesisTest` closed enum on stat-test's --test-type, and the
-  opt-in `min_tier` field on claims.
+  opt-in `min_tier` field on claims. 1.3 made stat-test / benchmark /
+  estimate artifact-driven and introduced keyed claim-integrity MACs.
 
 ## the test for a good proposal
 

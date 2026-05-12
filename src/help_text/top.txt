@@ -1,8 +1,8 @@
 
 QUICKSTART
   clms add "polymarket lags binance ~300ms" --tag market:btc
-  clms verify 1 --method stat-test --ref ./test.py --cmd "python3 ./test.py" \
-               --p-value 0.003 --sample-size 4821 --test-type ks --data-source real
+  clms verify 1 --method stat-test --ref ./lag_test_artifact.json \
+               --cmd "python3 ./test.py --out ./lag_test_artifact.json"
   clms add "we can arb this lag" --depends-on 1
   clms refute 1 --by 3 --reason "lookahead bias" --cascade
   clms timeline
