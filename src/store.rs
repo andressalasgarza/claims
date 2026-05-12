@@ -82,31 +82,57 @@ fn load_integrity_key() -> Result<[u8; 32]> {
     decode_hex_32(&raw, &format!("integrity key file {}", path.display()))
 }
 
-fn load_or_create_integrity_key() -> Result<[u8; 32]> {
-    if let Ok(hex) = std::env::var("CLAIMS_INTEGRITY_KEY_HEX") {
-        return decode_hex_32(&hex, "CLAIMS_INTEGRITY_KEY_HEX");
+/// honor CLAIMS_INTEGRITY_KEY_HEX (test fixture / explicit-key flow):
+/// Some(Ok(key)) if env was set + valid; None if env was unset; Err if set
+/// but malformed.
+fn try_key_from_env() -> Result<Option<[u8; 32]>> {
+    let Ok(hex) = std::env::var("CLAIMS_INTEGRITY_KEY_HEX") else {
+        return Ok(None);
+    };
+    Ok(Some(decode_hex_32(&hex, "CLAIMS_INTEGRITY_KEY_HEX")?))
+}
+
+/// load from the on-disk key file if present: Some(Ok(key)) if file exists
+/// + valid; None if absent; Err if present but unreadable/malformed.
+fn try_key_from_file(path: &Path) -> Result<Option<[u8; 32]>> {
+    if !path.exists() {
+        return Ok(None);
     }
-    let path = integrity_key_path()?;
-    if path.exists() {
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("read integrity key {}", path.display()))?;
-        return decode_hex_32(&raw, &format!("integrity key file {}", path.display()));
-    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read integrity key {}", path.display()))?;
+    Ok(Some(decode_hex_32(&raw, &format!("integrity key file {}", path.display()))?))
+}
+
+/// generate a fresh 32-byte key and persist it at `path` with 0o600 perms
+/// on unix. caller is responsible for ensuring this is the right moment to
+/// mint a new key (i.e., no prior key exists in env or file).
+fn generate_and_persist_key(path: &Path) -> Result<[u8; 32]> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("create integrity key dir {}", parent.display()))?;
     }
     let mut key = [0u8; 32];
     getrandom::getrandom(&mut key).map_err(|e| anyhow!("generate integrity key: {}", e))?;
-    fs::write(&path, format!("{}\n", encode_hex(&key)))
+    fs::write(path, format!("{}\n", encode_hex(&key)))
         .with_context(|| format!("write integrity key {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
             .with_context(|| format!("chmod 600 {}", path.display()))?;
     }
     Ok(key)
+}
+
+fn load_or_create_integrity_key() -> Result<[u8; 32]> {
+    if let Some(key) = try_key_from_env()? {
+        return Ok(key);
+    }
+    let path = integrity_key_path()?;
+    if let Some(key) = try_key_from_file(&path)? {
+        return Ok(key);
+    }
+    generate_and_persist_key(&path)
 }
 
 fn integrity_strict_marker_path(root: &Path) -> PathBuf {
@@ -117,10 +143,10 @@ fn integrity_strict_mode(root: &Path) -> bool {
     integrity_strict_marker_path(root).exists()
 }
 
-fn maybe_enable_integrity_strict_mode(root: &Path) -> Result<()> {
-    if integrity_strict_mode(root) {
-        return Ok(());
-    }
+/// scan the ledger and return true iff every claim file carries an
+/// integrity_mac. used as the precondition for entering strict-integrity
+/// mode: we only flip the strict marker on once the migration is complete.
+fn all_claims_have_macs(root: &Path) -> Result<bool> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
@@ -131,8 +157,18 @@ fn maybe_enable_integrity_strict_mode(root: &Path) -> Result<()> {
         let claim: Claim = serde_json::from_str(&raw)
             .with_context(|| format!("parse {} while checking strict-integrity readiness", path.display()))?;
         if claim.integrity_mac.is_none() {
-            return Ok(());
+            return Ok(false);
         }
+    }
+    Ok(true)
+}
+
+fn maybe_enable_integrity_strict_mode(root: &Path) -> Result<()> {
+    if integrity_strict_mode(root) {
+        return Ok(());
+    }
+    if !all_claims_have_macs(root)? {
+        return Ok(());
     }
     fs::write(integrity_strict_marker_path(root), "strict\n")
         .context("write strict-integrity marker")?;
@@ -295,6 +331,20 @@ impl Store {
     }
 
     pub fn reindex_all(&mut self) -> Result<usize> {
+        let claims = self.collect_all_claims_sorted()?;
+        self.conn.execute_batch("DELETE FROM edges; DELETE FROM claims;")?;
+        let mut count = 0;
+        for mut claim in claims {
+            self.write_claim(&mut claim)?;
+            count += 1;
+        }
+        maybe_enable_integrity_strict_mode(&self.root)?;
+        Ok(count)
+    }
+
+    /// read every claim file in the ledger root and return them sorted by
+    /// seq. extracted from reindex_all so the parent stays flat.
+    fn collect_all_claims_sorted(&self) -> Result<Vec<Claim>> {
         let mut claims = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -306,15 +356,7 @@ impl Store {
             claims.push(self.read_claim(seq)?);
         }
         claims.sort_by_key(|c| c.seq);
-
-        self.conn.execute_batch("DELETE FROM edges; DELETE FROM claims;")?;
-        let mut count = 0;
-        for mut claim in claims {
-            self.write_claim(&mut claim)?;
-            count += 1;
-        }
-        maybe_enable_integrity_strict_mode(&self.root)?;
-        Ok(count)
+        Ok(claims)
     }
 }
 
@@ -802,40 +844,58 @@ fn validate_observed(ev: &Evidence) -> Result<()> {
 /// rejects: localhost, 127/8, 0/8, 10/8, 172.16/12, 192.168/16, 169.254/16,
 /// ::1, fc00::/7, fe80::/10. matches by hostname *or* parsed IP literal so
 /// both `https://localhost:8080/health` and `http://127.0.0.1` are caught.
-pub fn target_is_local(target: &str) -> bool {
-    // strip scheme + path: "https://host:port/path" -> "host:port" -> "host"
+/// extract the bare host from a url-shaped target: strip scheme, path,
+/// :port suffix, and surrounding [ ] for ipv6 literals.
+fn extract_host_from_target(target: &str) -> &str {
     let after_scheme = target.split_once("://").map(|(_, r)| r).unwrap_or(target);
     let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
     let host = match host_port.rsplit_once(':') {
         Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => h,
         _ => host_port,
     };
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    if matches!(
-        host.to_ascii_lowercase().as_str(),
-        "localhost" | "localhost.localdomain" | "" | "::" | "::1"
-    ) {
+    host.trim_start_matches('[').trim_end_matches(']')
+}
+
+/// hard-coded local host literals. matched case-insensitively against the
+/// extracted host. centralizing the list keeps target_is_local flat.
+const LOCAL_HOST_LITERALS: &[&str] = &[
+    "localhost",
+    "localhost.localdomain",
+    "",
+    "::",
+    "::1",
+];
+
+/// ipv4 loopback/private/link-local/unspecified/0.0.0.0-prefix check.
+/// extracted so target_is_local stays flat.
+fn ipv4_is_local(v4: std::net::Ipv4Addr) -> bool {
+    v4.is_loopback()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_unspecified()
+        || v4.octets()[0] == 0
+}
+
+/// ipv6 loopback/unspecified/unique-local(fc00::/7)/link-local(fe80::/10).
+fn ipv6_is_local(v6: std::net::Ipv6Addr) -> bool {
+    if v6.is_loopback() || v6.is_unspecified() {
         return true;
     }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.octets()[0] == 0
-            }
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback() || v6.is_unspecified() || {
-                    let s = v6.segments()[0];
-                    // fc00::/7 (unique-local) or fe80::/10 (link-local)
-                    (s & 0xfe00) == 0xfc00 || (s & 0xffc0) == 0xfe80
-                }
-            }
-        };
+    let s = v6.segments()[0];
+    (s & 0xfe00) == 0xfc00 || (s & 0xffc0) == 0xfe80
+}
+
+pub fn target_is_local(target: &str) -> bool {
+    let host = extract_host_from_target(target);
+    let lowered = host.to_ascii_lowercase();
+    if LOCAL_HOST_LITERALS.iter().any(|lit| *lit == lowered) {
+        return true;
     }
-    false
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => ipv4_is_local(v4),
+        Ok(std::net::IpAddr::V6(v6)) => ipv6_is_local(v6),
+        Err(_) => false,
+    }
 }
 
 fn validate_documented(ev: &Evidence) -> Result<()> {
