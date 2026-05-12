@@ -62,74 +62,87 @@ fn main() {
     }
 }
 
+/// the reindex sub-command lives in main.rs (no commands/reindex.rs file)
+/// because its body is a one-liner + the refuse-in-repair guard. extracted
+/// here so `run` doesn't carry the inline `?` + println chain.
+fn cmd_reindex(store: &mut Store) -> Result<()> {
+    refuse_in_repair_mode("reindex")?;
+    let n = store.reindex_all()?;
+    println!("reindexed {} claims", n);
+    Ok(())
+}
+
+/// render-only commands (timeline / context / stats) share the same shape:
+/// call an output::render_* fn, print the string, return Ok. dispatched
+/// here to keep `run`'s match flat.
+fn cmd_render_pure(
+    cmd: Cmd, store: &Store, fmt: OutputFormat,
+) -> Result<()> {
+    let out = match cmd {
+        Cmd::Timeline { tag, exclude_agent } => {
+            output::render_timeline(store, fmt, tag.as_deref(), &exclude_agent)?
+        }
+        Cmd::Context { tag, exclude_agent } => {
+            output::render_context(store, tag.as_deref(), fmt, &exclude_agent)?
+        }
+        Cmd::Stats { tag, exclude_agent } => {
+            output::render_stats(store, fmt, tag.as_deref(), &exclude_agent)?
+        }
+        _ => unreachable!("cmd_render_pure called with non-render command"),
+    };
+    print!("{}", out);
+    Ok(())
+}
+
+/// archaeology dispatch: refuse mutators under CLAIMS_REPAIR, then forward
+/// to the archaeology module after translating the cli sub-enum to the
+/// module-internal one. extracted so `run` carries one arm for the whole
+/// archaeology surface.
+fn cmd_archaeology(
+    sub: ArchaeologySub, store: &mut Store, fmt: OutputFormat,
+) -> Result<()> {
+    match &sub {
+        ArchaeologySub::Commit(_) => refuse_in_repair_mode("archaeology commit")?,
+        ArchaeologySub::Purge(_) => refuse_in_repair_mode("archaeology purge")?,
+        ArchaeologySub::Suggest(_) => {}
+    }
+    let s = match sub {
+        ArchaeologySub::Suggest(a) => archaeology::Sub::Suggest(archaeology::SuggestArgs {
+            max: a.max,
+            source: a.source,
+            output: a.output,
+        }),
+        ArchaeologySub::Commit(a) => archaeology::Sub::Commit(archaeology::CommitArgs {
+            from_plan: a.from_plan,
+            keep: a.keep,
+        }),
+        ArchaeologySub::Purge(a) => archaeology::Sub::Purge(archaeology::PurgeArgs {
+            session: a.session,
+            agent: a.agent,
+        }),
+    };
+    archaeology::dispatch(s, store, fmt)
+}
+
 fn run(cli: Cli) -> Result<()> {
     let fmt = OutputFormat::parse(&cli.format)?;
     let cwd = cli.dir.clone().unwrap_or_else(|| std::env::current_dir().unwrap());
     let mut store = Store::open_or_init(&cwd)?;
-
     match cli.cmd {
         Cmd::Add(args) => cmd_add(&mut store, args, fmt),
         Cmd::Verify(args) => cmd_verify(&mut store, args, fmt),
         Cmd::Refute(args) => cmd_refute(&mut store, args, fmt),
         Cmd::Show { id } => cmd_show(&store, id, fmt),
-        Cmd::Timeline { tag, exclude_agent } => {
-            print!(
-                "{}",
-                output::render_timeline(&store, fmt, tag.as_deref(), &exclude_agent)?
-            );
-            Ok(())
-        }
-        Cmd::Context { tag, exclude_agent } => {
-            print!(
-                "{}",
-                output::render_context(&store, tag.as_deref(), fmt, &exclude_agent)?
-            );
-            Ok(())
-        }
         Cmd::Suspect { exclude_agent } => cmd_suspect(&store, fmt, &exclude_agent),
-        Cmd::Reindex => {
-            refuse_in_repair_mode("reindex")?;
-            let n = store.reindex_all()?;
-            println!("reindexed {} claims", n);
-            Ok(())
-        }
+        Cmd::Reindex => cmd_reindex(&mut store),
         Cmd::Rerun(args) => cmd_rerun(&mut store, args, fmt),
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
-        Cmd::Stats {
-            tag,
-            exclude_agent,
-        } => {
-            print!(
-                "{}",
-                output::render_stats(&store, fmt, tag.as_deref(), &exclude_agent)?
-            );
-            Ok(())
-        }
         Cmd::HelpAll => cmd_help_all(),
         Cmd::Schema { target } => cmd_schema(target, fmt),
         Cmd::InstallAgents { force, dry_run } => cmd_install_agents(fmt, force, dry_run),
-        Cmd::Archaeology { sub } => {
-            match &sub {
-                ArchaeologySub::Commit(_) => refuse_in_repair_mode("archaeology commit")?,
-                ArchaeologySub::Purge(_) => refuse_in_repair_mode("archaeology purge")?,
-                ArchaeologySub::Suggest(_) => {}
-            }
-            let s = match sub {
-                ArchaeologySub::Suggest(a) => archaeology::Sub::Suggest(archaeology::SuggestArgs {
-                    max: a.max,
-                    source: a.source,
-                    output: a.output,
-                }),
-                ArchaeologySub::Commit(a) => archaeology::Sub::Commit(archaeology::CommitArgs {
-                    from_plan: a.from_plan,
-                    keep: a.keep,
-                }),
-                ArchaeologySub::Purge(a) => archaeology::Sub::Purge(archaeology::PurgeArgs {
-                    session: a.session,
-                    agent: a.agent,
-                }),
-            };
-            archaeology::dispatch(s, &mut store, fmt)
+        Cmd::Archaeology { sub } => cmd_archaeology(sub, &mut store, fmt),
+        c @ (Cmd::Timeline { .. } | Cmd::Context { .. } | Cmd::Stats { .. }) => {
+            cmd_render_pure(c, &store, fmt)
         }
     }
 }
