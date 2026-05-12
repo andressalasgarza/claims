@@ -642,6 +642,41 @@ fn emit_commit_report(
     Ok(())
 }
 
+/// per-candidate validation, factored out of the parent loop. each call
+/// returns Ok(true) when this candidate counts toward keep_count, else
+/// Ok(false). errors bubble with their original phrasing intact.
+fn validate_plan_candidate(idx: usize, c: &serde_json::Value) -> Result<bool> {
+    let cid = c["id"]
+        .as_str()
+        .ok_or_else(|| anyhow!("candidate[{}] missing 'id'", idx))?;
+    let keep = c["keep"].as_bool();
+    if keep.is_none() {
+        bail!("candidate {} missing 'keep' boolean", cid);
+    }
+    if c["debate"].is_null() {
+        bail!(
+            "candidate {} has debate=null. archaeology commit requires curated survivors. \
+             run the debate phase first (see docs/archaeology.md phase 2).",
+            cid
+        );
+    }
+    let verdict = c["debate"]["judge"]["verdict"].as_str();
+    if verdict.is_none() {
+        bail!(
+            "candidate {} missing debate.judge.verdict (must be \"keep\" or \"drop\")",
+            cid
+        );
+    }
+    let keeps = keep.unwrap_or(false);
+    if keeps && verdict != Some("keep") {
+        bail!(
+            "candidate {} has keep:true but debate.judge.verdict={:?}",
+            cid, verdict
+        );
+    }
+    Ok(keeps)
+}
+
 fn validate_plan(plan: &serde_json::Value, keep_cap: usize) -> Result<()> {
     let v = plan["version"].as_str().unwrap_or("");
     if v != SCHEMA_VERSION {
@@ -655,34 +690,7 @@ fn validate_plan(plan: &serde_json::Value, keep_cap: usize) -> Result<()> {
         .ok_or_else(|| anyhow!("survivors.json: 'candidates' must be an array"))?;
     let mut keep_count = 0usize;
     for (idx, c) in candidates.iter().enumerate() {
-        let cid = c["id"]
-            .as_str()
-            .ok_or_else(|| anyhow!("candidate[{}] missing 'id'", idx))?;
-        let keep = c["keep"].as_bool();
-        if keep.is_none() {
-            bail!("candidate {} missing 'keep' boolean", cid);
-        }
-        if c["debate"].is_null() {
-            bail!(
-                "candidate {} has debate=null. archaeology commit requires curated survivors. \
-                 run the debate phase first (see docs/archaeology.md phase 2).",
-                cid
-            );
-        }
-        let verdict = c["debate"]["judge"]["verdict"].as_str();
-        if verdict.is_none() {
-            bail!(
-                "candidate {} missing debate.judge.verdict (must be \"keep\" or \"drop\")",
-                cid
-            );
-        }
-        if keep.unwrap_or(false) {
-            if verdict != Some("keep") {
-                bail!(
-                    "candidate {} has keep:true but debate.judge.verdict={:?}",
-                    cid, verdict
-                );
-            }
+        if validate_plan_candidate(idx, c)? {
             keep_count += 1;
         }
     }

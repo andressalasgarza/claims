@@ -1,4 +1,4 @@
-use crate::models::{Claim, EdgeType, Evidence, State};
+use crate::models::{BenchmarkMetric, Claim, EdgeType, Evidence, State};
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
 use std::fs;
@@ -423,6 +423,65 @@ fn missing_str(opt: &Option<String>) -> bool {
     opt.as_deref().unwrap_or("").trim().is_empty()
 }
 
+// ---------- per-field validation helpers ----------
+//
+// each helper bundles two or more inline checks (presence + shape) into a
+// single call site. drops caller ccn by (n_internal_decisions - 1) per use
+// without changing user-visible error wording: the caller still owns the
+// error message via closures, so the golden file stays byte-identical.
+
+/// the artifact-driven preamble shared by stat-test/benchmark/estimate:
+/// --ref must be present, must hash as a local file, and --cmd must be
+/// non-empty. centralizing the trio drops 3 ccn from each validate_* that
+/// uses it.
+fn req_artifact_inputs(
+    ev: &Evidence, missing_ref_msg: &'static str, missing_local_msg: &'static str,
+    missing_cmd_msg: &'static str,
+) -> Result<()> {
+    if missing_ref(ev) {
+        return Err(anyhow!("{}", missing_ref_msg));
+    }
+    if ev.ref_hash.is_none() {
+        return Err(anyhow!("{}", missing_local_msg));
+    }
+    if missing_str(&ev.cmd) {
+        return Err(anyhow!("{}", missing_cmd_msg));
+    }
+    Ok(())
+}
+
+/// present-and-finite: bundles `.ok_or_else()? + !is_finite()` into one
+/// caller decision. each use saves 1 ccn vs inline.
+fn req_finite_field(
+    opt: Option<f64>, miss_err: impl FnOnce() -> anyhow::Error,
+    nonfinite_err: impl FnOnce(f64) -> anyhow::Error,
+) -> Result<f64> {
+    let v = opt.ok_or_else(miss_err)?;
+    if !v.is_finite() {
+        return Err(nonfinite_err(v));
+    }
+    Ok(v)
+}
+
+/// present-and-at-least: bundles `.ok_or_else()? + n < lower` into one
+/// caller decision. used for sample_size >= 2 across all 3 artifact methods.
+fn req_u64_at_least(
+    opt: Option<u64>, lower: u64, miss_err: impl FnOnce() -> anyhow::Error,
+    too_low_err: impl FnOnce(u64) -> anyhow::Error,
+) -> Result<u64> {
+    let n = opt.ok_or_else(miss_err)?;
+    if n < lower {
+        return Err(too_low_err(n));
+    }
+    Ok(n)
+}
+
+/// some-or-else for non-numeric option fields (estimator, test_type,
+/// data_source). just a thin alias to make call sites uniform.
+fn req_present<T>(opt: Option<T>, err: impl FnOnce() -> anyhow::Error) -> Result<T> {
+    opt.ok_or_else(err)
+}
+
 fn validate_prop_test(ev: &Evidence) -> Result<()> {
     if missing_ref(ev) {
         return Err(anyhow!("prop-test requires --ref <path-to-test-file>"));
@@ -476,112 +535,87 @@ fn validate_replay_test(ev: &Evidence) -> Result<()> {
     Ok(())
 }
 
-fn validate_benchmark(ev: &Evidence) -> Result<()> {
-    if missing_ref(ev) {
-        return Err(anyhow!("benchmark requires --ref <path-to-local-json-artifact>"));
+/// direction-aware threshold check for benchmark. extracted to keep the
+/// main validator flat: this captures the (metric, value, threshold) triple
+/// + the higher/lower-better routing as a single decision in the caller.
+fn benchmark_check_threshold(metric: BenchmarkMetric, v: f64, t: f64) -> Result<()> {
+    let passes = if metric.is_higher_better() { v >= t } else { v <= t };
+    if passes {
+        return Ok(());
     }
-    if ev.ref_hash.is_none() {
-        return Err(anyhow!(
-            "benchmark requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted."
-        ));
-    }
-    if missing_str(&ev.cmd) {
-        return Err(anyhow!(
-            "benchmark requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time, hashes stdout, then parses metric/sample metadata from the artifact instead of trusting cli flags."
-        ));
-    }
-    let metric = ev.metric.ok_or_else(|| {
-        anyhow!(
-            "benchmark artifact missing 'metric'. valid: auc-roc | auc-pr | f1 | precision | recall | accuracy | balanced-accuracy | mcc | kappa-cohen | r2 | log-loss | brier | rmse | mae | mape."
-        )
-    })?;
-    let v = ev
-        .metric_value
-        .ok_or_else(|| anyhow!("benchmark artifact missing 'metric_value'"))?;
-    if !v.is_finite() {
-        return Err(anyhow!(
+    let dir = if metric.is_higher_better() {
+        "higher-better, need value >= threshold"
+    } else {
+        "lower-better, need value <= threshold"
+    };
+    Err(anyhow!(
+        "benchmark refused: metric_value={} did not meet threshold={} for metric '{}' ({}).\nstate stays pending; either fix the eval, lower the threshold honestly, or write a different claim if the miss is the actual finding.",
+        v, t, metric.as_str(), dir,
+    ))
+}
+
+/// pull required numeric/enum fields from a benchmark evidence record.
+/// returns the validated (metric, metric_value, threshold) triple. extracted
+/// to keep validate_benchmark's body flat; closures inside this fn count
+/// toward this fn's ccn instead of the parent's.
+fn benchmark_collect_required(ev: &Evidence) -> Result<(BenchmarkMetric, f64, f64)> {
+    let metric = req_present(ev.metric, || anyhow!(
+        "benchmark artifact missing 'metric'. valid: auc-roc | auc-pr | f1 | precision | recall | accuracy | balanced-accuracy | mcc | kappa-cohen | r2 | log-loss | brier | rmse | mae | mape."
+    ))?;
+    let v = req_finite_field(
+        ev.metric_value,
+        || anyhow!("benchmark artifact missing 'metric_value'"),
+        |x| anyhow!(
             "benchmark --metric-value must be finite (got {}). NaN/inf are not measurable values.",
-            v
-        ));
-    }
-    let t = ev
-        .threshold
-        .ok_or_else(|| anyhow!("benchmark requires --threshold <float>"))?;
-    if !t.is_finite() {
-        return Err(anyhow!(
+            x
+        ),
+    )?;
+    let t = req_finite_field(
+        ev.threshold,
+        || anyhow!("benchmark requires --threshold <float>"),
+        |x| anyhow!(
             "benchmark --threshold must be finite (got {}). NaN/inf are not measurable thresholds.",
-            t
-        ));
-    }
-    let n = ev
-        .sample_size
-        .ok_or_else(|| anyhow!("benchmark artifact missing 'sample_size'"))?;
-    if n < 2 {
-        return Err(anyhow!(
+            x
+        ),
+    )?;
+    Ok((metric, v, t))
+}
+
+/// sample size + data-source presence for benchmark. extracted for the
+/// same reason as benchmark_collect_required.
+fn benchmark_check_meta(ev: &Evidence) -> Result<()> {
+    req_u64_at_least(
+        ev.sample_size,
+        2,
+        || anyhow!("benchmark artifact missing 'sample_size'"),
+        |n| anyhow!(
             "benchmark --sample-size must be >= 2 (got {}). a metric computed on one sample is not measurable evidence.",
             n
-        ));
-    }
-    if ev.data_source.is_none() {
-        return Err(anyhow!(
-            "benchmark artifact missing 'data_source' (expected real|live). synthetic eval sets cannot falsify a claim about real-world performance."
-        ));
-    }
-    // direction check: enforce metric_value passes threshold per metric direction.
-    // higher-better: value >= threshold passes. lower-better: value <= threshold passes.
-    let passes = if metric.is_higher_better() {
-        v >= t
-    } else {
-        v <= t
-    };
-    if !passes {
-        let dir = if metric.is_higher_better() {
-            "higher-better, need value >= threshold"
-        } else {
-            "lower-better, need value <= threshold"
-        };
-        return Err(anyhow!(
-            "benchmark refused: metric_value={} did not meet threshold={} for metric '{}' ({}).\nstate stays pending; either fix the eval, lower the threshold honestly, or write a different claim if the miss is the actual finding.",
-            v, t, metric.as_str(), dir,
-        ));
-    }
+        ),
+    )?;
+    req_present(ev.data_source.as_ref(), || anyhow!(
+        "benchmark artifact missing 'data_source' (expected real|live). synthetic eval sets cannot falsify a claim about real-world performance."
+    ))?;
     Ok(())
 }
 
-fn validate_estimate(ev: &Evidence) -> Result<()> {
-    if missing_ref(ev) {
-        return Err(anyhow!("estimate requires --ref <path-to-local-json-artifact>"));
-    }
-    if ev.ref_hash.is_none() {
-        return Err(anyhow!(
-            "estimate requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted."
-        ));
-    }
-    if missing_str(&ev.cmd) {
-        return Err(anyhow!(
-            "estimate requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time, hashes stdout, then parses estimator/ci metadata from the artifact instead of trusting cli flags."
-        ));
-    }
-    if ev.estimator.is_none() {
-        return Err(anyhow!(
-            "estimate artifact missing 'estimator'. valid: mean | median | geometric-mean | std-dev | std-error | variance | skewness | kurtosis | cohens-d | odds-ratio | risk-ratio | correlation | spearman-rho."
-        ));
-    }
-    let point = ev
-        .point_value
-        .ok_or_else(|| anyhow!("estimate artifact missing 'point_value'"))?;
-    if !point.is_finite() {
-        return Err(anyhow!(
-            "estimate --point-value must be finite (got {}). NaN/inf are not measurable values.",
-            point
-        ));
-    }
-    let lo = ev
-        .ci_lower
-        .ok_or_else(|| anyhow!("estimate artifact missing 'ci_lower'"))?;
-    let hi = ev
-        .ci_upper
-        .ok_or_else(|| anyhow!("estimate artifact missing 'ci_upper'"))?;
+fn validate_benchmark(ev: &Evidence) -> Result<()> {
+    req_artifact_inputs(
+        ev,
+        "benchmark requires --ref <path-to-local-json-artifact>",
+        "benchmark requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted.",
+        "benchmark requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time, hashes stdout, then parses metric/sample metadata from the artifact instead of trusting cli flags.",
+    )?;
+    let (metric, v, t) = benchmark_collect_required(ev)?;
+    benchmark_check_meta(ev)?;
+    benchmark_check_threshold(metric, v, t)
+}
+
+/// CI shape checks for estimate: lo and hi must be finite, lo ≤ hi, and
+/// the point estimate must lie within [lo, hi]. extracted so the parent
+/// stays flat. uses three sequential checks; caller pays 1 ccn for the
+/// whole CI block.
+fn estimate_check_ci(point: f64, lo: f64, hi: f64) -> Result<()> {
     if !lo.is_finite() || !hi.is_finite() {
         return Err(anyhow!(
             "estimate CI bounds must be finite (got ci_lower={}, ci_upper={}).",
@@ -600,73 +634,116 @@ fn validate_estimate(ev: &Evidence) -> Result<()> {
             point, lo, hi
         ));
     }
-    let conf = ev
-        .confidence_level
-        .ok_or_else(|| anyhow!("estimate artifact missing 'confidence_level'"))?;
-    if !conf.is_finite() || conf <= 0.0 || conf >= 1.0 {
-        return Err(anyhow!(
-            "estimate --confidence-level must be in (0, 1) (got {}). typical values: 0.90, 0.95, 0.99.",
-            conf
-        ));
+    Ok(())
+}
+
+/// confidence-level must be a probability strictly between 0 and 1.
+/// extracted so the parent doesn't accumulate the 3-way conjunction.
+fn estimate_check_confidence(conf: f64) -> Result<()> {
+    if conf.is_finite() && conf > 0.0 && conf < 1.0 {
+        return Ok(());
     }
-    let n = ev
-        .sample_size
-        .ok_or_else(|| anyhow!("estimate artifact missing 'sample_size'"))?;
-    if n < 2 {
-        return Err(anyhow!(
+    Err(anyhow!(
+        "estimate --confidence-level must be in (0, 1) (got {}). typical values: 0.90, 0.95, 0.99.",
+        conf
+    ))
+}
+
+/// collect estimator presence + point_value + ci bounds. closures pile up
+/// here instead of the parent.
+fn estimate_collect_point_and_ci(ev: &Evidence) -> Result<(f64, f64, f64)> {
+    req_present(ev.estimator, || anyhow!(
+        "estimate artifact missing 'estimator'. valid: mean | median | geometric-mean | std-dev | std-error | variance | skewness | kurtosis | cohens-d | odds-ratio | risk-ratio | correlation | spearman-rho."
+    ))?;
+    let point = req_finite_field(
+        ev.point_value,
+        || anyhow!("estimate artifact missing 'point_value'"),
+        |x| anyhow!(
+            "estimate --point-value must be finite (got {}). NaN/inf are not measurable values.",
+            x
+        ),
+    )?;
+    let lo = req_present(ev.ci_lower, || anyhow!("estimate artifact missing 'ci_lower'"))?;
+    let hi = req_present(ev.ci_upper, || anyhow!("estimate artifact missing 'ci_upper'"))?;
+    Ok((point, lo, hi))
+}
+
+/// confidence-level + sample-size + data-source for estimate.
+fn estimate_check_meta(ev: &Evidence) -> Result<()> {
+    let conf = req_present(
+        ev.confidence_level,
+        || anyhow!("estimate artifact missing 'confidence_level'"),
+    )?;
+    estimate_check_confidence(conf)?;
+    req_u64_at_least(
+        ev.sample_size,
+        2,
+        || anyhow!("estimate artifact missing 'sample_size'"),
+        |n| anyhow!(
             "estimate --sample-size must be >= 2 (got {}). a CI from a single sample is not measurable.",
             n
-        ));
+        ),
+    )?;
+    req_present(ev.data_source.as_ref(), || anyhow!(
+        "estimate artifact missing 'data_source' (expected real|live). estimators on synthetic data only describe the simulator (circular)."
+    ))?;
+    Ok(())
+}
+
+fn validate_estimate(ev: &Evidence) -> Result<()> {
+    req_artifact_inputs(
+        ev,
+        "estimate requires --ref <path-to-local-json-artifact>",
+        "estimate requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted.",
+        "estimate requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time, hashes stdout, then parses estimator/ci metadata from the artifact instead of trusting cli flags.",
+    )?;
+    let (point, lo, hi) = estimate_collect_point_and_ci(ev)?;
+    estimate_check_ci(point, lo, hi)?;
+    estimate_check_meta(ev)
+}
+
+/// p_value must be a probability AND not NaN. nan check is separate from
+/// the range check because nan compares false to both bounds and would slip
+/// through `contains()`.
+fn stat_test_check_p_value(p: f64) -> Result<()> {
+    if (0.0..=1.0).contains(&p) && !p.is_nan() {
+        return Ok(());
     }
-    if ev.data_source.is_none() {
-        return Err(anyhow!(
-            "estimate artifact missing 'data_source' (expected real|live). estimators on synthetic data only describe the simulator (circular)."
-        ));
-    }
+    Err(anyhow!(
+        "stat-test --p-value must be in [0.0, 1.0] (got {}). a p-value is a probability — outside that range it is not a p-value.",
+        p
+    ))
+}
+
+/// sample-size + test_type + data-source for stat-test. extracted so the
+/// closure cost doesn't pile onto validate_stat_test.
+fn stat_test_check_meta(ev: &Evidence) -> Result<()> {
+    req_u64_at_least(
+        ev.sample_size,
+        2,
+        || anyhow!("stat-test artifact missing 'sample_size'"),
+        |n| anyhow!(
+            "stat-test --sample-size must be >= 2 (got {}). a single sample (or zero) cannot falsify a distributional claim.",
+            n
+        ),
+    )?;
+    req_present(ev.test_type, || anyhow!("stat-test artifact missing 'test_type'"))?;
+    req_present(ev.data_source.as_ref(), || anyhow!(
+        "stat-test artifact missing 'data_source' (expected real|live). simulated/synthetic data is refused: it cannot falsify a claim about reality."
+    ))?;
     Ok(())
 }
 
 fn validate_stat_test(ev: &Evidence) -> Result<()> {
-    if missing_ref(ev) {
-        return Err(anyhow!("stat-test requires --ref <path-to-local-json-artifact>"));
-    }
-    if ev.ref_hash.is_none() {
-        return Err(anyhow!(
-            "stat-test requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted."
-        ));
-    }
-    if missing_str(&ev.cmd) {
-        return Err(anyhow!(
-            "stat-test requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time and parses p_value/sample metadata from the artifact instead of trusting cli flags."
-        ));
-    }
-    let p = ev.p_value.ok_or_else(|| anyhow!("stat-test artifact missing 'p_value'"))?;
-    if !(0.0..=1.0).contains(&p) || p.is_nan() {
-        return Err(anyhow!(
-            "stat-test --p-value must be in [0.0, 1.0] (got {}). a p-value is a probability — outside that range it is not a p-value.",
-            p
-        ));
-    }
-    let n = ev
-        .sample_size
-        .ok_or_else(|| anyhow!("stat-test artifact missing 'sample_size'"))?;
-    if n < 2 {
-        return Err(anyhow!(
-            "stat-test --sample-size must be >= 2 (got {}). a single sample (or zero) cannot falsify a distributional claim.",
-            n
-        ));
-    }
-    if ev.test_type.is_none() {
-        return Err(anyhow!(
-            "stat-test artifact missing 'test_type'"
-        ));
-    }
-    if ev.data_source.is_none() {
-        return Err(anyhow!(
-            "stat-test artifact missing 'data_source' (expected real|live). simulated/synthetic data is refused: it cannot falsify a claim about reality."
-        ));
-    }
-    Ok(())
+    req_artifact_inputs(
+        ev,
+        "stat-test requires --ref <path-to-local-json-artifact>",
+        "stat-test requires --ref to exist as a local file after --cmd runs. clms hashes and parses that artifact; URLs and bare strings are not accepted.",
+        "stat-test requires --cmd \"<shell cmd that produces the local json artifact at --ref>\". clms executes it at verify time and parses p_value/sample metadata from the artifact instead of trusting cli flags.",
+    )?;
+    let p = req_present(ev.p_value, || anyhow!("stat-test artifact missing 'p_value'"))?;
+    stat_test_check_p_value(p)?;
+    stat_test_check_meta(ev)
 }
 
 /// observed --ref must be one of:
@@ -770,22 +847,21 @@ fn validate_documented(ev: &Evidence) -> Result<()> {
 /// refuted parents, and self-derivation (cite yourself to verify yourself).
 /// all now refuse with specific messages. derived must compose only over
 /// claims that have actually crossed the falsifiability bar.
-fn validate_derived(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()> {
+/// derived-input gates: arity, self-reference, dedup. flat sequence so a
+/// future maintainer adding another "input shape" check has one obvious
+/// home. saves 3 ccn from the parent.
+fn derived_check_inputs(ev: &Evidence, current_seq: u64) -> Result<()> {
     if ev.from_claims.len() < 2 {
         return Err(anyhow!(
             "derived requires at least two --from <claim_id> entries"
         ));
     }
-
-    // self-derivation
     if ev.from_claims.contains(&current_seq) {
         return Err(anyhow!(
             "derived: claim #{} cannot cite itself in --from. self-derivation is circular.",
             current_seq
         ));
     }
-
-    // dedup
     let mut seen = std::collections::HashSet::new();
     for id in &ev.from_claims {
         if !seen.insert(*id) {
@@ -795,8 +871,12 @@ fn validate_derived(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()
             ));
         }
     }
+    Ok(())
+}
 
-    // every parent must exist and be verified
+/// every parent must exist and be in Verified state. extracted so the
+/// parent function carries one decision (the for loop) instead of three.
+fn derived_check_parents(store: &Store, ev: &Evidence) -> Result<()> {
     for id in &ev.from_claims {
         let parent = store.read_claim(*id).map_err(|_| {
             anyhow!(
@@ -813,12 +893,15 @@ fn validate_derived(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()
             ));
         }
     }
+    Ok(())
+}
 
-    // cycle detection: walking from each --from parent, the current claim must
-    // not be reachable through any chain of derived edges. without this, X can
-    // derive from {Y, Z} while Y derives from {X, Z} — both verify, and the
-    // "derived" relation is no longer a DAG. the falsifiability story collapses
-    // because each claim's evidence ultimately rests on its own conclusion.
+/// cycle detection: walking from each --from parent, the current claim must
+/// not be reachable through any chain of derived edges. without this, X can
+/// derive from {Y, Z} while Y derives from {X, Z} — both verify, and the
+/// "derived" relation is no longer a DAG. the falsifiability story collapses
+/// because each claim's evidence ultimately rests on its own conclusion.
+fn derived_check_dag(store: &Store, ev: &Evidence, current_seq: u64) -> Result<()> {
     let mut visited = std::collections::HashSet::new();
     for parent_id in &ev.from_claims {
         if let Some(cycle_path) = derived_cycle_path(store, *parent_id, current_seq, &mut visited)? {
@@ -836,6 +919,13 @@ fn validate_derived(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()
             ));
         }
     }
+    Ok(())
+}
+
+fn validate_derived(ev: &Evidence, store: &Store, current_seq: u64) -> Result<()> {
+    derived_check_inputs(ev, current_seq)?;
+    derived_check_parents(store, ev)?;
+    derived_check_dag(store, ev, current_seq)?;
     Ok(())
 }
 
