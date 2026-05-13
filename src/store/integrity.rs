@@ -1,10 +1,10 @@
 mod checks;
 mod key;
-mod strict;
+mod path;
 
 pub(crate) use checks::{check_content_hash, check_integrity_mac, check_seq_matches};
 pub(crate) use key::load_or_create_integrity_key;
-pub(crate) use strict::{claim_seq_from_path, maybe_enable_integrity_strict_mode};
+pub(crate) use path::claim_seq_from_path;
 
 use crate::models::Claim;
 

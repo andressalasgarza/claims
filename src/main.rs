@@ -16,6 +16,7 @@ use crate::commands::add::cmd_add;
 use crate::commands::diff::cmd_diff_evidence;
 use crate::commands::help_all::cmd_help_all;
 use crate::commands::install_agents::cmd_install_agents;
+use crate::commands::migrate_integrity::cmd_migrate_integrity;
 use crate::commands::refute::cmd_refute;
 use crate::commands::rerun::cmd_rerun;
 use crate::commands::schema_cli::cmd_schema;
@@ -138,6 +139,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Show { id } => cmd_show(&store, id, fmt),
         Cmd::Suspect { exclude_agent } => cmd_suspect(&store, fmt, &exclude_agent),
         Cmd::Reindex => cmd_reindex(&mut store),
+        Cmd::MigrateIntegrity => cmd_migrate_integrity(&mut store, fmt),
         Cmd::Rerun(args) => cmd_rerun(&mut store, args, fmt),
         Cmd::DiffEvidence { id } => cmd_diff_evidence(&store, id, fmt),
         Cmd::HelpAll => cmd_help_all(),

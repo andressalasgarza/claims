@@ -41,7 +41,7 @@ pub(crate) fn assert_not_refuted_verify(claim: &Claim, seq: u64) -> Result<()> {
 pub(crate) fn refuse_in_repair_mode(op: &str) -> Result<()> {
     if std::env::var("CLAIMS_REPAIR").is_ok() {
         return Err(anyhow!(
-            "{}: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex or archaeology mutation.",
+            "{}: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex/migrate-integrity or archaeology mutation.",
             op
         ));
     }

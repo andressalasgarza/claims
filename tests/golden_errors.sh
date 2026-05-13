@@ -239,6 +239,44 @@ run_case "repair mode: add refused" \
 run_case "repair mode: reindex refused" \
   env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE="$CLAIMS_INTEGRITY_KEY_FILE" "$CLMS" reindex
 
+run_case "repair mode: migrate-integrity refused" \
+  env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE="$CLAIMS_INTEGRITY_KEY_FILE" "$CLMS" migrate-integrity
+
+# strict-only integrity: hash-only claims are refused even if the old
+# .integrity.strict marker is absent.
+python3 - <<'PY'
+import json
+p = '.claims/000001.json'
+obj = json.load(open(p))
+obj['integrity_mac'] = None
+open(p, 'w').write(json.dumps(obj, indent=2) + '\n')
+PY
+rm -f .claims/.integrity.strict
+
+run_case "integrity: hash-only claim refused" \
+  "$CLMS" show 1
+
+run_case "integrity: migrate hash-only claim" \
+  "$CLMS" migrate-integrity
+
+# migration refuses to sign a legacy hash-only claim if its content_hash no
+# longer matches.
+BAD_LEDGER="$TMP/bad-ledger"
+export BAD_LEDGER
+mkdir -p "$BAD_LEDGER"
+"$CLMS" --dir "$BAD_LEDGER" add "bad legacy claim" > /dev/null 2>&1
+python3 - <<'PY'
+import json, os
+p = os.environ['BAD_LEDGER'] + '/.claims/000001.json'
+obj = json.load(open(p))
+obj['integrity_mac'] = None
+obj['text'] = 'tampered legacy claim'
+open(p, 'w').write(json.dumps(obj, indent=2) + '\n')
+PY
+
+run_case "integrity: migrate refuses content_hash mismatch" \
+  "$CLMS" --dir "$BAD_LEDGER" migrate-integrity
+
 # tamper only the keyed MAC: content_hash still verifies, so read_claim must
 # fail on integrity_mac specifically.
 python3 - <<'PY'

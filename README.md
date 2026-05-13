@@ -216,13 +216,15 @@ each claim stores its own outgoing edges. reverse lookups via sqlite index.
 ├── 000001.json     ← canonical source of truth (content-hashed + keyed-MAC)
 ├── 000002.json
 ├── ...
-└── index.db        ← sqlite, rebuilt and legacy claims re-signed via `clms reindex`
+└── index.db        ← sqlite, rebuilt via `clms reindex`
 ```
 
 claim files are immutable in spirit. mutations (verify, refute) update the
 file in place but the content-hash + keyed integrity MAC + git history give
-tamper evidence. for total immutability, commit `.claims/` to git after every
-write.
+tamper evidence. strict integrity is always on: every claim file must carry
+`integrity_mac`; legacy hash-only ledgers must run `clms migrate-integrity`
+once. `.claims/.integrity.strict` is obsolete and has no effect. for total
+immutability, commit `.claims/` to git after every write.
 
 ## ids
 
@@ -241,7 +243,7 @@ cli accepts either: `clms show 42` and `clms show 01HXYZ...` both work.
 | `CLAIMS_AGENT` | auto-stamp every write with this agent name |
 | `CLAIMS_SESSION` | auto-stamp every write with this session id |
 | `CLAIMS_BACKFILL` | `=1` authorizes provenance overrides on `clms add` |
-| `CLAIMS_REPAIR` | `=1` disables claim-integrity verification for forensic reads; all mutators refuse |
+| `CLAIMS_REPAIR` | `=1` disables claim-integrity verification for forensic reads; all mutators, including `migrate-integrity`, refuse |
 | `CLAIMS_INTEGRITY_KEY_FILE` | path to keyed integrity material (default `~/.clms/integrity.key`, auto-created on first write) |
 | `CLAIMS_INTEGRITY_KEY_HEX` | 32-byte (64 hex chars) integrity key inline via env; overrides file |
 
@@ -320,6 +322,7 @@ clms suspect            [--exclude-agent A]
 clms rerun <id> [--acknowledge-drift]
 clms diff-evidence <id>
 clms reindex
+clms migrate-integrity
 clms archaeology suggest [--max N] [--source K] [-o PATH]
 clms archaeology commit  --from-plan PATH [--keep K]
 clms archaeology purge   --session STAMP [--agent A]

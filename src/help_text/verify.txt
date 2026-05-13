@@ -190,10 +190,12 @@ ENV VARS (provenance + repair)
                       forensic recovery (show / diff-evidence / timeline /
                       context). ALL mutating commands refuse under repair
                       mode, including add / verify / rerun / refute / reindex /
-                      archaeology commit+purge.
+                      migrate-integrity / archaeology commit+purge.
   CLAIMS_INTEGRITY_KEY_FILE
                       path to keyed integrity material. defaults to
                       ~/.clms/integrity.key and is auto-created on first write.
+                      every claim must carry integrity_mac; old hash-only
+                      ledgers need `clms migrate-integrity` once.
   CLAIMS_INTEGRITY_KEY_HEX
                       32-byte (64 hex chars) integrity key supplied directly
                       via env. overrides CLAIMS_INTEGRITY_KEY_FILE.

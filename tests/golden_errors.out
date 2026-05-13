@@ -211,12 +211,37 @@ this claim was stamped with a tier floor at creation time (likely by an orchestr
 === repair mode: add refused ===
 + env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE=TMPDIR/integrity.key target/release/clms add should refuse
 exit=1
-Error: add: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex or archaeology mutation.
+Error: add: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex/migrate-integrity or archaeology mutation.
 
 === repair mode: reindex refused ===
 + env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE=TMPDIR/integrity.key target/release/clms reindex
 exit=1
-Error: reindex: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex or archaeology mutation.
+Error: reindex: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex/migrate-integrity or archaeology mutation.
+
+=== repair mode: migrate-integrity refused ===
++ env CLAIMS_REPAIR=1 CLAIMS_INTEGRITY_KEY_FILE=TMPDIR/integrity.key target/release/clms migrate-integrity
+exit=1
+Error: migrate-integrity: refusing under CLAIMS_REPAIR=1. repair mode is read-only — it skips claim-integrity verification for forensic recovery (show, diff-evidence, timeline, context). fix the corrupted records first, then unset CLAIMS_REPAIR before mutating state. without this guard, a tampered claim could be carried forward into add/verify/refute/rerun/reindex/migrate-integrity or archaeology mutation.
+
+=== integrity: hash-only claim refused ===
++ target/release/clms show 1
+exit=1
+Error: claim #1 at TMPDIR/.claims/000001.json has no integrity_mac. strict integrity is mandatory; run `clms migrate-integrity` once for legacy hash-only ledgers. hash-only claims are refused.
+
+=== integrity: migrate hash-only claim ===
++ target/release/clms migrate-integrity
+exit=0
+migrate-integrity: checked=3 upgraded=1 mandatory integrity_mac is now enforced
+
+=== integrity: migrate refuses content_hash mismatch ===
++ target/release/clms --dir TMPDIR/bad-ledger migrate-integrity
+exit=1
+Error: cannot migrate-integrity: claim #1 content_hash mismatch.
+  stored:     HASH
+  recomputed: HASH
+  path:       TMPDIR/bad-ledger/.claims/000001.json
+
+legacy migration only signs files that still match their existing content_hash checkpoint.
 
 === integrity: tampered integrity_mac refused ===
 + target/release/clms show 1

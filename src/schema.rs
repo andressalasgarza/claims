@@ -43,7 +43,7 @@ pub fn methods_table() -> Value {
 
 pub fn schema_value() -> Value {
     json!({
-        "version": "2.1",
+        "version": "2.2",
         "archaeology": {
             "version": "archaeology/v2",
             "contract": "candidacy engine, NOT verification engine. always writes state=pending. promotion via clms verify.",
@@ -106,6 +106,13 @@ pub fn schema_value() -> Value {
             "description": "opt-in tier floor stamped on a claim at write time. when set, `clms verify` refuses to mark the claim verified using evidence below the floor. set via `clms add --min-tier <tier>`. valid: empirical | observed | documented | derived.",
             "semantics": "evidence.method.tier (looked up via the methods table) is compared to claim.min_tier. evidence at or above the floor is accepted; below the floor is refused with a list of allowed methods at the floor.",
             "backward_compat": "absent on claims that did not set it; behaves exactly as pre-feature when absent."
+        },
+        "integrity": {
+            "mode": "strict-only",
+            "mandatory_field": "integrity_mac",
+            "legacy_migration": "run `clms migrate-integrity` once. migration verifies each existing content_hash checkpoint, refuses mismatches, then writes keyed integrity_mac values.",
+            "obsolete_marker": ".claims/.integrity.strict is ignored/obsolete; marker deletion cannot downgrade integrity checks.",
+            "repair_mode": "CLAIMS_REPAIR=1 is forensic read-only. all mutating commands, including migrate-integrity, refuse under repair mode."
         },
         "edge_types": ["depends_on", "tests", "supports", "refines", "refutes"],
         "output_formats": ["default", "human", "ai"],
@@ -210,7 +217,7 @@ pub fn schema_value() -> Value {
             "CLAIMS_AGENT":    "auto-stamp every write with this agent name",
             "CLAIMS_SESSION":  "auto-stamp every write with this session id",
             "CLAIMS_BACKFILL":            "=1 authorizes --git-sha-override / --created-at-override on `clms add` (archaeology / forensic reconstruction only).",
-            "CLAIMS_REPAIR":              "=1 disables claim-integrity verification in read_claim for forensic recovery. read-only: all mutating commands refuse under this flag.",
+            "CLAIMS_REPAIR":              "=1 disables claim-integrity verification in read_claim for forensic recovery. read-only: all mutating commands, including migrate-integrity, refuse under this flag.",
             "CLAIMS_INTEGRITY_KEY_FILE":  "path to the keyed integrity material used to sign/verify claim files. defaults to ~/.clms/integrity.key and is auto-created on first write.",
             "CLAIMS_INTEGRITY_KEY_HEX":   "32-byte (64 hex chars) integrity key supplied directly via env. overrides CLAIMS_INTEGRITY_KEY_FILE."
         }

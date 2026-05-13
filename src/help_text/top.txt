@@ -8,6 +8,11 @@ QUICKSTART
   clms timeline
   clms context --format ai             # for stuffing into agent context
 
+INTEGRITY
+  strict integrity is always on. every claim file must have integrity_mac.
+  legacy hash-only ledgers must run `clms migrate-integrity` once; deleting
+  or creating .claims/.integrity.strict has no effect.
+
 STATES
   pending      logged, no evidence yet
   verified     evidence attached, passed validation

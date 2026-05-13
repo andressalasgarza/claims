@@ -1,5 +1,4 @@
 use super::key::load_integrity_key;
-use super::strict::integrity_strict_mode;
 use super::{canonical_content_hash, canonical_integrity_mac};
 use crate::models::Claim;
 use anyhow::{anyhow, Result};
@@ -32,7 +31,7 @@ pub(crate) fn check_content_hash(c: &Claim, seq: u64, path: &Path, repair: bool)
         None if repair => return Ok(()),
         None => return Err(anyhow!(
             "claim #{} at {} has no content_hash. either it was hand-written outside `clms`, \
-or it predates the integrity field. set CLAIMS_REPAIR=1 to read anyway, then re-save with `clms reindex`.",
+or it predates the integrity field. set CLAIMS_REPAIR=1 for forensic read-only access; hashless claims cannot be migrated automatically.",
             seq, path.display(),
         )),
     };
@@ -58,10 +57,10 @@ fn integrity_key_or_err(seq: u64, path: &Path) -> Result<[u8; 32]> {
     ))
 }
 
-pub(crate) fn check_integrity_mac(c: &Claim, seq: u64, path: &Path, root: &Path, repair: bool) -> Result<()> {
+pub(crate) fn check_integrity_mac(c: &Claim, seq: u64, path: &Path, repair: bool) -> Result<()> {
     let stored = match c.integrity_mac.as_deref() {
         Some(s) => s,
-        None => return check_integrity_mac_missing(seq, path, root, repair),
+        None => return check_integrity_mac_missing(seq, path, repair),
     };
     let key = match integrity_key_or_err(seq, path) {
         Ok(k) => k,
@@ -79,15 +78,15 @@ pub(crate) fn check_integrity_mac(c: &Claim, seq: u64, path: &Path, root: &Path,
     ))
 }
 
-/// missing-mac branch: in strict mode every claim must carry a mac. legacy
-/// non-strict ledgers tolerate absence; CLAIMS_REPAIR=1 always lets the read
-/// proceed for forensic recovery.
-fn check_integrity_mac_missing(seq: u64, path: &Path, root: &Path, repair: bool) -> Result<()> {
-    if !integrity_strict_mode(root) || repair {
+/// missing-mac branch: strict integrity is the only normal mode. legacy
+/// hash-only ledgers must be migrated explicitly; CLAIMS_REPAIR=1 is the
+/// read-only forensic bypass.
+fn check_integrity_mac_missing(seq: u64, path: &Path, repair: bool) -> Result<()> {
+    if repair {
         return Ok(());
     }
     Err(anyhow!(
-        "claim #{} at {} has no integrity_mac, but this ledger is in strict integrity mode. migrate legacy hash-only claims with `clms reindex`, or set CLAIMS_REPAIR=1 for forensic read-only access.",
+        "claim #{} at {} has no integrity_mac. strict integrity is mandatory; run `clms migrate-integrity` once for legacy hash-only ledgers. hash-only claims are refused.",
         seq, path.display(),
     ))
 }

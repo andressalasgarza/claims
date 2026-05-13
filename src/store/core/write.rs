@@ -1,6 +1,6 @@
 use super::super::integrity::{
     canonical_content_hash, canonical_integrity_mac, claim_seq_from_path,
-    load_or_create_integrity_key, maybe_enable_integrity_strict_mode,
+    load_or_create_integrity_key,
 };
 use super::super::Store;
 use crate::models::Claim;
@@ -27,7 +27,6 @@ impl Store {
         fs::write(&path, pretty).with_context(|| format!("write {}", path.display()))?;
 
         self.index_claim(claim)?;
-        maybe_enable_integrity_strict_mode(&self.root)?;
         Ok(())
     }
 
@@ -73,7 +72,6 @@ impl Store {
             self.write_claim(&mut claim)?;
             count += 1;
         }
-        maybe_enable_integrity_strict_mode(&self.root)?;
         Ok(count)
     }
 

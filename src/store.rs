@@ -15,13 +15,17 @@ use std::path::PathBuf;
 
 pub const STORE_DIR: &str = ".claims";
 pub const INDEX_FILE: &str = "index.db";
-pub(crate) const INTEGRITY_STRICT_MARKER: &str = ".integrity.strict";
 pub(crate) const DEFAULT_INTEGRITY_KEY_DIR: &str = ".clms";
 pub(crate) const DEFAULT_INTEGRITY_KEY_FILE: &str = "integrity.key";
 
 pub struct Store {
     pub root: PathBuf,
     pub conn: Connection,
+}
+
+pub(crate) struct IntegrityMigration {
+    pub checked: usize,
+    pub upgraded: usize,
 }
 
 pub(crate) const SCHEMA: &str = r#"

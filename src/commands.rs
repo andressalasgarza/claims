@@ -5,6 +5,7 @@ pub(crate) mod add;
 pub(crate) mod diff;
 pub(crate) mod help_all;
 pub(crate) mod install_agents;
+pub(crate) mod migrate_integrity;
 pub(crate) mod refute;
 pub(crate) mod rerun;
 pub(crate) mod schema_cli;

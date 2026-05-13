@@ -24,9 +24,9 @@ impl Store {
     ///   1. content_hash: public fingerprint over canonical bytes (diagnostic)
     ///   2. integrity_mac: keyed MAC over the same bytes (authoritative)
     ///
-    /// legacy ledgers may have only content_hash until they are migrated via
-    /// `clms reindex`. once every file carries integrity_mac, strict mode is
-    /// enabled and hash-only claims are refused.
+    /// integrity_mac is mandatory in normal operation. legacy hash-only
+    /// ledgers must be upgraded with `clms migrate-integrity`; there is no
+    /// marker-controlled non-strict mode.
     pub fn read_claim(&self, seq: u64) -> Result<Claim> {
         let path = self.claim_path(seq);
         let raw = fs::read_to_string(&path)
@@ -38,7 +38,7 @@ impl Store {
         // and repair is off. read_claim stays flat.
         check_seq_matches(&c, seq, &path, repair)?;
         check_content_hash(&c, seq, &path, repair)?;
-        check_integrity_mac(&c, seq, &path, &self.root, repair)?;
+        check_integrity_mac(&c, seq, &path, repair)?;
         Ok(c)
     }
 

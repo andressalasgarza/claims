@@ -13,6 +13,7 @@ pub(crate) const VERIFY_HELP: &str = include_str!("help_text/verify.txt");
 pub(crate) const REFUTE_HELP: &str = include_str!("help_text/refute.txt");
 pub(crate) const RERUN_HELP: &str = include_str!("help_text/rerun.txt");
 pub(crate) const DIFF_HELP: &str = include_str!("help_text/diff.txt");
+pub(crate) const MIGRATE_INTEGRITY_HELP: &str = include_str!("help_text/migrate_integrity.txt");
 pub(crate) const STATS_HELP: &str = include_str!("help_text/stats.txt");
 pub(crate) const ARCHAEOLOGY_HELP: &str = include_str!("help_text/archaeology.txt");
 pub(crate) const SCHEMA_HELP: &str = include_str!("help_text/schema.txt");
@@ -72,6 +73,9 @@ pub(crate) enum Cmd {
     },
     /// rebuild the sqlite index from the .claims/*.json source of truth.
     Reindex,
+    /// upgrade legacy hash-only claim files by verifying content_hash once and writing integrity_mac.
+    #[command(after_help = MIGRATE_INTEGRITY_HELP)]
+    MigrateIntegrity,
     /// re-execute the stored cmd on a claim's latest runnable evidence and append fresh evidence.
     #[command(after_help = RERUN_HELP)]
     Rerun(RerunArgs),

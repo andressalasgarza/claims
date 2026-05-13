@@ -1,0 +1,15 @@
+
+EXAMPLES
+  clms migrate-integrity
+  clms --format ai migrate-integrity
+
+NOTES
+  - strict integrity is the only normal mode. every claim file must carry
+    integrity_mac; hash-only claims are refused by show/timeline/verify/etc.
+  - migrate-integrity is the one-time legacy bridge: it scans .claims/*.json,
+    verifies each existing content_hash once, refuses any mismatch, then writes
+    keyed integrity_mac values.
+  - .claims/.integrity.strict is obsolete; deleting or creating it has no
+    effect.
+  - migrate-integrity is refused under CLAIMS_REPAIR=1 because repair mode is
+    read-only.
